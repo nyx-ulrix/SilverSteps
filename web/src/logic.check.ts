@@ -65,3 +65,16 @@ console.log('logic ok')
   assert.deepEqual(decodePolyline('_p~iF~ps|U_ulLnnqC_mqNvxq`@'), [[-120.2, 38.5], [-120.95, 40.7], [-126.453, 43.252]])
   console.log('polyline ok')
 }
+// resident reports back up gaps: a steps report 30 m from the steps gap counts, a dark report there does not,
+// one 500 m away does not, and "other" never counts
+{
+  const { reportsByGap, sortGaps } = await import('./logic.ts')
+  const g: Gap = { ...gaps[0], at: [103.8005, 1.37] }
+  const r = (id: number, category: string, dlng: number) => ({ id, lat: 1.37, lng: 103.8005 + dlng, category })
+  const m = reportsByGap([g], [r(1, 'steps', 0.00027), r(2, 'dark', 0), r(3, 'steps', 0.0045), r(4, 'other', 0), r(5, 'slope', 0)], segs)
+  assert.deepEqual(m.get('1:steps'), [1]) // slope (5) backs slope/steep, not steps
+  // "reported" sort puts the resident-backed gap first even with lower impact
+  const k: Gap = { ...gaps[0], id: 'k', foot: 99999 }
+  assert.deepEqual(sortGaps([k, g], 'reported', new Map([['1:steps', 2]])).map(x => x.id), ['1:steps', 'k'])
+  console.log('reports ok')
+}

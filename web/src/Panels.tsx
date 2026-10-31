@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
-  ArrowLeftIcon, CameraIcon, CheckIcon, FireIcon, TrafficSignalIcon, XIcon, PlusIcon, ArrowCounterClockwiseIcon, TrashIcon, CrosshairIcon,
+  ArrowLeftIcon, CameraIcon, ChatCircleTextIcon, CheckIcon, FireIcon, TrafficSignalIcon, XIcon, PlusIcon, ArrowCounterClockwiseIcon, TrashIcon, CrosshairIcon,
   UsersThreeIcon, WarningIcon, ArrowClockwiseIcon,
 } from '@phosphor-icons/react'
 import { BarrierBadge } from './Badge.tsx'
@@ -87,7 +87,7 @@ export function TownPicker({ towns, value, onChange }: { towns: TownSummary[]; v
   )
 }
 
-export const SORT_LABEL: Record<SortMode, string> = { impact: 'Biggest impact', seniors: 'Most seniors helped', quick: 'Quick wins' }
+export const SORT_LABEL: Record<SortMode, string> = { impact: 'Biggest impact', reported: 'Most reported by residents', seniors: 'Most seniors helped', quick: 'Quick wins' }
 
 export function SortControl({ value, onChange }: { value: SortMode; onChange: (m: SortMode) => void }) {
   return (
@@ -102,7 +102,7 @@ export function SortControl({ value, onChange }: { value: SortMode; onChange: (m
 
 /* ---------- Priority list ---------- */
 
-export function GapList({ gaps: all, townNames, onPick, splitPlanned = true }: { gaps: Gap[]; townNames?: Record<string, string>; onPick: (g: Gap) => void; splitPlanned?: boolean }) {
+export function GapList({ gaps: all, townNames, onPick, splitPlanned = true, reported }: { gaps: Gap[]; townNames?: Record<string, string>; onPick: (g: Gap) => void; splitPlanned?: boolean; reported?: Map<string, unknown[]> }) {
   const [limit, setLimit] = useState(6)
   const gaps = splitPlanned ? all.filter(g => !g.planned) : all
   const planned = splitPlanned ? all.filter(g => g.planned) : []
@@ -122,6 +122,9 @@ export function GapList({ gaps: all, townNames, onPick, splitPlanned = true }: {
                 <span className="row-meta">{gapPlace(g)}{townNames ? `, ${townNames[g.town] ?? g.town}` : ''}</span>
                 <span className="chips">
                   <span className="chip">Fix: {g.fix}</span>
+                  {(reported?.get(g.id)?.length ?? 0) > 0 && (
+                    <span className="chip chip-reported"><ChatCircleTextIcon aria-hidden size={14} />{reported!.get(g.id)!.length} resident {reported!.get(g.id)!.length === 1 ? 'report' : 'reports'}</span>
+                  )}
                   <span className="chip">~{short(g.foot)} trips/wk</span>
                   {g.planned ? <span className="chip chip-planned">Already planned</span> : <span className="chip chip-quiet">{EFFORT[g.effort]}</span>}
                 </span>
@@ -138,7 +141,7 @@ export function GapList({ gaps: all, townNames, onPick, splitPlanned = true }: {
       {planned.length > 0 && (
         <details className="disclosure">
           <summary>Already planned ({planned.length})</summary>
-          <GapList gaps={planned} townNames={townNames} onPick={onPick} splitPlanned={false} />
+          <GapList gaps={planned} townNames={townNames} onPick={onPick} splitPlanned={false} reported={reported} />
         </details>
       )}
     </>
@@ -317,8 +320,8 @@ function CrossingInfo({ seg, barriers }: { seg: SegInfo; barriers: string[] }) {
 
 /* ---------- Gap detail ---------- */
 
-export function GapDetail({ gap, onHotspot, removed, rank, total, sortLabel, verdict, segs, index, onVerdict, onMissed, onSegment, saveState, saveError }: {
-  gap: Gap; onHotspot: boolean; removed: boolean; rank: number; total: number; sortLabel: string; verdict: Verdict | undefined
+export function GapDetail({ gap, onHotspot, residentReports = 0, onOpenReports, removed, rank, total, sortLabel, verdict, segs, index, onVerdict, onMissed, onSegment, saveState, saveError }: {
+  gap: Gap; onHotspot: boolean; residentReports?: number; onOpenReports?: () => void; removed: boolean; rank: number; total: number; sortLabel: string; verdict: Verdict | undefined
   segs: SegInfo[]; index: IndexData; onVerdict: (v: 'correct' | 'wrong') => void; onMissed: (b: string, note: string) => void
   onSegment: (id: string) => void; saveState: SaveState; saveError: string | null
 }) {
@@ -361,6 +364,15 @@ export function GapDetail({ gap, onHotspot, removed, rank, total, sortLabel, ver
         </p>
       ) : gap.sv === null ? <p className="muted">No Street View here</p> : null}
       {gap.corrected && !removed && <ResidentMark />}
+      {residentReports > 0 && (
+        <button type="button" className="row gap-row" onClick={onOpenReports}>
+          <span className="badge sev-1" aria-hidden><ChatCircleTextIcon size={20} /></span>
+          <span className="gap-body">
+            <span className="issue">{residentReports} resident {residentReports === 1 ? 'report' : 'reports'} here</span>
+            <span className="row-meta">See what residents said in Reports</span>
+          </span>
+        </button>
+      )}
       <details className="disclosure">
         <summary>Details</summary>
         <dl className="breakdown">

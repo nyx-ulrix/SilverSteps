@@ -512,3 +512,7 @@ textarea { resize: vertical; }
 .lightbox { max-width: min(92vw, 900px); padding: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); }
 .lightbox::backdrop { background: rgb(0 0 0 / 0.7); }
 .lightbox img { display: block; max-width: 100%; max-height: 75dvh; margin-bottom: 10px; border-radius: 6px; }
+
+.chip-reported { display: inline-flex; align-items: center; gap: 4px; border-color: var(--accent); color: var(--text); font-weight: 600; }
+.only-toggle { display: flex; align-items: center; gap: 10px; min-height: 44px; font-size: 0.9rem; cursor: pointer; }
+.only-toggle input { width: 20px; height: 20px; accent-color: var(--accent); margin: 0; }

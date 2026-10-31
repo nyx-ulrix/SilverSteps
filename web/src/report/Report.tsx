@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import {
-  ArrowLeftIcon, CameraIcon, CheckCircleIcon, CheckIcon, MapPinIcon, WarningIcon,
+  ArrowLeftIcon, CameraIcon, CheckCircleIcon, CheckIcon, MapPinIcon, NavigationArrowIcon, WarningIcon,
   StairsIcon, ChairIcon, UmbrellaIcon, WarningCircleIcon, TrafficSignIcon, MoonStarsIcon, ChatCircleTextIcon, type Icon,
 } from '@phosphor-icons/react'
 import type { Category } from '../categories.ts'
@@ -19,8 +19,9 @@ const TILES: { key: Category; label: string; icon: Icon }[] = [
   { key: 'other', label: 'Something else', icon: ChatCircleTextIcon },
 ]
 
-type Place = { lat: number; lng: number; accuracy?: number } | { hint: string }
-type Gps = { state: 'finding' } | { state: 'ok'; lat: number; lng: number; accuracy: number; region: string | null } | { state: 'failed' }
+// A place is GPS / map coordinates, a postal-code lookup (coordinates plus address), or just a typed address.
+type Place = { lat: number; lng: number; accuracy?: number; hint?: string } | { hint: string }
+type Gps = { state: 'finding' } | { state: 'ok'; lat: number; lng: number; accuracy: number; region: string | null } | { state: 'failed'; denied: boolean }
 type Draft = { place: Place | null; photo: string | null; category: Category | null; note: string }
 const SAVED = 'ss-report-unsent'
 const load = (): Draft | null => { try { const s = localStorage.getItem(SAVED); return s ? JSON.parse(s) : null } catch { return null } }
@@ -48,8 +49,7 @@ export default function Report() {
   const [noteOpen, setNoteOpen] = useState(false)
   const [gps, setGps] = useState<Gps>({ state: 'finding' })
   const [manual, setManual] = useState<Place | null>(null) // chosen by map pin or typed block when GPS fails
-  const [where, setWhere] = useState<'chip' | 'ask' | 'map' | 'type'>('chip')
-  const [hint, setHint] = useState('')
+  const [where, setWhere] = useState<'chip' | 'ask' | 'map'>('chip')
   const [unsent, setUnsent] = useState<Draft | null>(load)
   const [sentId, setSentId] = useState<string | number | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -58,17 +58,39 @@ export default function Report() {
   const cam = useRef<HTMLInputElement>(null), gal = useRef<HTMLInputElement>(null)
 
   // Ask for the location quietly as soon as the page opens; most people never see a location step.
-  useEffect(() => {
-    if (!navigator.geolocation) { setGps({ state: 'failed' }); return }
+  // Some phones only prompt after a tap, so "Use my location" calls this again from the button.
+  const locate = () => {
+    if (!navigator.geolocation) { setGps({ state: 'failed', denied: false }); return }
+    setGps({ state: 'finding' })
     navigator.geolocation.getCurrentPosition(async pos => {
       const { latitude: lat, longitude: lng, accuracy } = pos.coords
       let region: string | null = null
       try { const r = await fetch(`/api/regions/locate?lat=${lat}&lng=${lng}`); if (r.ok) region = (await r.json()).name ?? null } catch { /* name is optional */ }
-      setGps({ state: 'ok', lat, lng, accuracy, region })
-    }, () => setGps({ state: 'failed' }), { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 })
-  }, [])
+      setManual(null); setGps({ state: 'ok', lat, lng, accuracy, region }); setWhere('chip')
+    }, err => setGps({ state: 'failed', denied: err.code === err.PERMISSION_DENIED }), { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 })
+  }
+  useEffect(locate, [])
   useEffect(() => { head.current?.focus() }, [screen])
-  useEffect(() => { if (gps.state === 'failed' && !manual) setWhere('ask') }, [gps.state, manual])
+
+  // Postal code (6 digits) is looked up to coordinates; anything else is sent as a typed address.
+  const [postal, setPostal] = useState('')
+  const [found, setFound] = useState<string | null>(null)
+  const [lookErr, setLookErr] = useState<string | null>(null)
+  const [looking, setLooking] = useState(false)
+  const lookup = async () => {
+    const v = postal.trim()
+    if (!v) return
+    setLookErr(null); setFound(null)
+    if (!/^\d{6}$/.test(v)) { setManual({ hint: v }); setWhere('chip'); return }
+    setLooking(true)
+    try {
+      const r = await fetch(`/api/geocode?postal=${v}`)
+      if (r.ok) {
+        const g = await r.json()
+        setFound(g.address); setManual({ lat: g.lat, lng: g.lng, hint: g.address }); setWhere('chip')
+      } else setLookErr(r.status === 404 ? "We couldn't find that postal code. Please check it, or type the block and street." : 'Something went wrong. Please try again.')
+    } catch { setLookErr("We couldn't reach the server. Please try again.") } finally { setLooking(false) }
+  }
 
   const place: Place | null = manual ?? (gps.state === 'ok' ? { lat: gps.lat, lng: gps.lng, accuracy: gps.accuracy } : null)
   const go = (s: 1 | 2 | 'done') => { setError(null); setScreen(s); scrollTo(0, 0) }
@@ -84,7 +106,9 @@ export default function Report() {
     setBusy(true); setError(null)
     const draft: Draft = { place, photo, category, note }
     const body = {
-      ...('hint' in place ? { address_hint: place.hint } : { lat: place.lat, lng: place.lng, accuracy_m: place.accuracy ? Math.round(place.accuracy) : undefined }),
+      ...('lat' in place
+        ? { lat: place.lat, lng: place.lng, accuracy_m: place.accuracy ? Math.round(place.accuracy) : undefined, address_hint: place.hint }
+        : { address_hint: place.hint }),
       category, description: note.trim() || undefined, photo: photo ?? undefined,
     }
     try {
@@ -113,11 +137,13 @@ export default function Report() {
     go(2)
   }
   const restart = () => {
-    setPhoto(null); setCategory(null); setNote(''); setNoteOpen(false); setManual(null); setHint(''); setWhere(gps.state === 'failed' ? 'ask' : 'chip'); go(1)
+    setPhoto(null); setCategory(null); setNote(''); setNoteOpen(false); setManual(null); setPostal(''); setFound(null); setWhere('chip'); go(1)
   }
 
-  const chipText = manual ? ('hint' in manual ? manual.hint : 'Pinned on the map')
-    : gps.state === 'ok' ? (gps.region ? `Near ${gps.region}` : 'Near you') : gps.state === 'finding' ? 'Finding where you are' : null
+  const chipText = manual ? (manual.hint ? (found === manual.hint ? `Found: ${manual.hint}` : manual.hint) : 'Pinned on the map')
+    : gps.state === 'ok' ? (gps.region ? `Near ${gps.region}` : 'Near you') : null
+  // The "Where is it?" card shows until we have a place: GPS still pending, failed, or the user tapped Change.
+  const showAsk = where === 'ask' || (where === 'chip' && !place)
 
   return (
     <main className="r-wrap">
@@ -157,21 +183,29 @@ export default function Report() {
           {where === 'map' ? (
             <Suspense fallback={<p className="r-muted">Loading the map</p>}>
               <PickMap start={gps.state === 'ok' ? [gps.lng, gps.lat] : null}
-                onPick={([lng, lat]) => { setManual({ lat, lng }); setWhere('chip') }} onCancel={() => setWhere(manual || gps.state === 'ok' ? 'chip' : 'ask')} />
+                onPick={([lng, lat]) => { setManual({ lat, lng }); setWhere('chip') }} onCancel={() => setWhere('chip')} />
             </Suspense>
-          ) : where === 'type' ? (
-            <form className="r-stack" onSubmit={e => { e.preventDefault(); if (hint.trim()) { setManual({ hint: hint.trim() }); setWhere('chip') } }}>
-              <label htmlFor="hint" className="r-label">Block number and street</label>
-              <input id="hint" className="r-input" value={hint} onChange={e => setHint(e.target.value)} autoComplete="street-address" aria-describedby="hint-ex" autoFocus />
-              <p id="hint-ex" className="r-muted">For example: Blk 314 Ang Mo Kio Ave 3</p>
-              <button type="submit" className="r-btn r-primary" disabled={!hint.trim()}>Use this</button>
-            </form>
-          ) : where === 'ask' ? (
+          ) : showAsk ? (
             <div className="r-card">
               <p className="r-label">Where is it?</p>
               <p className="r-muted">So the Town Council knows where to look.</p>
-              <button type="button" className="r-btn" onClick={() => setWhere('map')}><MapPinIcon aria-hidden size={26} />Pick on a map</button>
-              <button type="button" className="r-btn" onClick={() => setWhere('type')}>Type the block number</button>
+              <button type="button" className="r-btn r-primary" onClick={locate} disabled={gps.state === 'finding'}>
+                <NavigationArrowIcon aria-hidden size={26} />{gps.state === 'finding' ? 'Finding you…' : 'Use my location'}
+              </button>
+              {gps.state === 'failed' && gps.denied && (
+                <p className="r-muted">Location is off. You can turn it on in your phone settings, or type the postal code.</p>
+              )}
+              <form className="r-postal" onSubmit={e => { e.preventDefault(); lookup() }}>
+                <label htmlFor="postal" className="r-label">Postal code or block</label>
+                <div className="r-row">
+                  <input id="postal" className="r-input" inputMode="text" autoComplete="postal-code" value={postal}
+                    onChange={e => { setPostal(e.target.value); setLookErr(null) }} aria-describedby="postal-ex" />
+                  <button type="submit" className="r-btn r-find" disabled={!postal.trim() || looking}>{looking ? 'Finding' : 'Find'}</button>
+                </div>
+                <p id="postal-ex" className="r-muted">For example: 560314, or Blk 314 Ang Mo Kio Ave 3</p>
+                {lookErr && <p className="r-error" role="alert"><WarningIcon aria-hidden size={24} />{lookErr}</p>}
+              </form>
+              <button type="button" className="r-link r-small" onClick={() => setWhere('map')}>Pick on a map</button>
             </div>
           ) : (
             <div className="r-top">

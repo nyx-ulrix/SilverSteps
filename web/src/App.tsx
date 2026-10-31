@@ -8,7 +8,7 @@ import { api, ApiError, getJSON } from './api.ts'
 import { BarrierBadge } from './Badge.tsx'
 import { CATEGORIES, CAT, type Category, type Cluster, type ReportRow } from './categories.ts'
 import {
-  affects, applyCorrections, breaks, decodePolyline, distToLine, metresBetween, hotspots, riskAreas, routeAccuracy, sortGaps, type BlockRoute, type Hotspot,
+  affects, applyCorrections, breaks, reportsByGap, decodePolyline, distToLine, metresBetween, hotspots, riskAreas, routeAccuracy, sortGaps, type BlockRoute, type Hotspot,
   type Feedback, type Gap, type IndexData, type LngLat, type Route, type Seg, type SegInfo, type SortMode, type Verdict, type VisionEntry,
 } from './logic.ts'
 import {
@@ -78,7 +78,14 @@ export default function App() {
 
   const [sel, setSel] = useState<Sel>(null)
   const pendingGap = useRef<string | null>(null)
-  const [sort, setSort] = useState<SortMode>('impact')
+  const [sort, setSortRaw] = useState<SortMode>('impact')
+  // Once a planner picks a sort, don't switch it for them when reports arrive.
+  const sortTouched = useRef(false)
+  const setSort = (m: SortMode) => { sortTouched.current = true; setSortRaw(m) }
+  const [onlyReported, setOnlyReported] = useState(false)
+  // Every resident report in the region (all time), for counting reports per fix.
+  const [allReports, setAllReports] = useState<ReportRow[]>([])
+  const pendingReportIds = useRef<(number | string)[] | null>(null)
   const [listMode, setListMode] = useState<ListMode>(() => (MODES.includes(HASH[1] as ListMode) ? HASH[1] as ListMode : 'hot'))
   // Block-to-place routes: loaded only when the Routes view opens (about 2 MB per town).
   const [townRoutes, setTownRoutes] = useState<BlockRoute[] | null | 'error'>(null)
@@ -139,7 +146,7 @@ export default function App() {
 
   // Lazy-load only the selected town's files.
   useEffect(() => {
-    setTown(null); setBlocks(null); setDests(null); setFeedback([]); setRoutes([]); setVision(undefined); setTownRoutes(null); setBlk(''); setSegDrawn(false); setClusters(null); setReportRows([]); setTownErr(false); setSaveError(null)
+    setTown(null); setBlocks(null); setDests(null); setFeedback([]); setRoutes([]); setVision(undefined); setTownRoutes(null); setBlk(''); setSegDrawn(false); setClusters(null); setReportRows([]); setAllReports([]); setTownErr(false); setSaveError(null)
     if (!slug) return
     let live = true
     const base = `/data/towns/${slug}`
@@ -169,6 +176,11 @@ export default function App() {
     apiUp().then(err => {
       if (err || !live) return
       api.feedback(slug).then(d => live && setFeedback(d), noteApiFailure)
+      getJSON<ReportRow[]>(`/api/reports?town=${encodeURIComponent(slug)}`).then(d => {
+        if (!live) return
+        setAllReports(d)
+        if (d.length && !sortTouched.current) setSortRaw('reported') // lead with what residents said
+      }, () => {})
       api.routes(slug).then(d => live && setRoutes(d), noteApiFailure)
     })
     return () => { live = false }
@@ -204,7 +216,9 @@ export default function App() {
   // "Who for" keeps only barriers that affect that group, then re-ranks.
   const forWho = useCallback((gs: Gap[]) => (index ? gs.filter(g => affects(index.barriers, g.barrier, who)) : gs), [index, who])
   const visibleGaps = useMemo(() => forWho(corrected?.gaps ?? []), [corrected, forWho])
-  const ranked = useMemo(() => sortGaps(visibleGaps, sort), [visibleGaps, sort])
+  const reportedBy = useMemo(() => (town ? reportsByGap(visibleGaps, allReports, town.segs) : new Map<string, (number | string)[]>()), [town, visibleGaps, allReports])
+  const reportedCount = useMemo(() => new Map([...reportedBy].map(([k, v]) => [k, v.length])), [reportedBy])
+  const ranked = useMemo(() => sortGaps(onlyReported ? visibleGaps.filter(g => reportedBy.has(g.id)) : visibleGaps, sort, reportedCount), [visibleGaps, sort, reportedCount, onlyReported, reportedBy])
   const rankedTop = useMemo(() => sortGaps(forWho(topGaps), sort), [topGaps, sort, forWho])
   const footBreaks = useMemo(() => breaks(town ? [...town.segs.values()].map(s => s.foot) : [], [0.5, 0.75, 0.9, 0.97]), [town])
   const subzoneBreaks = useMemo(() => breaks((subzones?.features ?? []).map(f => Number(f.properties?.seniors ?? 0)).filter(n => n > 0), [0.2, 0.4, 0.6, 0.8]), [subzones])
@@ -335,6 +349,17 @@ export default function App() {
     const pts = reportRows.filter(r => c.report_ids.includes(r.id)).map(r => [r.lng, r.lat] as LngLat)
     select({ kind: 'cluster', id: c.id }, pts.length > 1 ? pts : [[c.lng, c.lat]])
   }
+  const openReportsFor = (ids: (number | string)[]) => {
+    pendingReportIds.current = ids
+    setSel(null); setListMode('reports')
+  }
+  useEffect(() => {
+    const ids = pendingReportIds.current
+    if (!ids || !Array.isArray(clusters)) return
+    pendingReportIds.current = null
+    const c = clusters.find(x => x.report_ids.some(id => ids.includes(id)))
+    if (c) pickCluster(c)
+  }, [clusters])
   const pickRoute = (r: BlockRoute) => {
     if (mobile) setSheetOpen(true)
     select({ kind: 'route', id: String(r.id) }, r.coords)
@@ -542,7 +567,8 @@ export default function App() {
     body = <>
       <div className="detail-bar"><span /><CloseButton onClick={() => setSel(null)} /></div>
       <GapDetail
-        key={selGap.id} gap={selGap} onHotspot={!!footP && selGap.foot >= footP[1]} removed={removed} rank={rank} total={ranked.length} sortLabel={SORT_LABEL[sort]} verdict={v}
+        key={selGap.id} gap={selGap} onHotspot={!!footP && selGap.foot >= footP[1]}
+        residentReports={reportedBy.get(selGap.id)?.length ?? 0} onOpenReports={() => openReportsFor(reportedBy.get(selGap.id) ?? [])} removed={removed} rank={rank} total={ranked.length} sortLabel={SORT_LABEL[sort]} verdict={v}
         segs={segs} index={index}
         onVerdict={verdict => sendCorrection({ segment: selGap.segs[0], gap: selGap.id, barrier: selGap.barrier, verdict })}
         onMissed={(b, note) => segs[0] && sendCorrection({ segment: segs[0].id, barrier: b, verdict: 'missed', note })}
@@ -593,7 +619,15 @@ export default function App() {
         ) : (
           <section className="stack-sm" aria-labelledby="fixes-h">
             <div className="list-head"><h2 id="fixes-h">Priority fixes</h2><SortControl value={sort} onChange={setSort} /></div>
-            <GapList key={slug} gaps={ranked} onPick={pickGap} />
+            {allReports.length > 0 && (
+              <label className="only-toggle">
+                <input type="checkbox" checked={onlyReported} onChange={e => setOnlyReported(e.target.checked)} />
+                Only places residents reported
+              </label>
+            )}
+            {onlyReported && ranked.length === 0
+              ? <p className="empty">No fixes here match a resident report yet.</p>
+              : <GapList key={slug} gaps={ranked} onPick={pickGap} reported={reportedBy} />}
           </section>
         )}
         <button type="button" className="btn btn-secondary wide" onClick={() => { setView('draw'); setSel(null); setDraft([]); setRouteMsg(null) }}>

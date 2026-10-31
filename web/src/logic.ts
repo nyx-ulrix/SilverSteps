@@ -131,17 +131,19 @@ function rebuild(g: Gap, list: SegInfo[]): Gap {
   }
 }
 
-export type SortMode = 'impact' | 'seniors' | 'quick'
+export type SortMode = 'impact' | 'reported' | 'seniors' | 'quick'
 const EFFORT_RANK: Record<Effort, number> = { low: 0, medium: 1, high: 2 }
 
 /** Works already planned (HDB / LTA) count half in every sort mode, so unplanned barriers rise. */
 const plannedFactor = (g: Gap) => (g.planned ? 0.5 : 1)
 
-export function sortGaps(gaps: Gap[], mode: SortMode): Gap[] {
+export function sortGaps(gaps: Gap[], mode: SortMode, reported?: Map<string, number>): Gap[] {
   const impact = (g: Gap) => g.foot * g.severity * plannedFactor(g)
   const foot = (g: Gap) => g.foot * plannedFactor(g)
+  const n = (g: Gap) => reported?.get(g.id) ?? 0
   return [...gaps].sort((a, b) =>
-    mode === 'seniors' ? foot(b) - foot(a) || impact(b) - impact(a)
+    mode === 'reported' ? n(b) - n(a) || impact(b) - impact(a)
+    : mode === 'seniors' ? foot(b) - foot(a) || impact(b) - impact(a)
       : mode === 'quick' ? EFFORT_RANK[a.effort] - EFFORT_RANK[b.effort] || impact(b) - impact(a)
         : impact(b) - impact(a))
 }
@@ -345,6 +347,40 @@ export function decodePolyline(s: string): LngLat[] {
   while (i < s.length) {
     lat += next(); lng += next()
     out.push([lng / 1e5, lat / 1e5])
+  }
+  return out
+}
+
+/** Which modelled barriers each resident report category backs up. "other" backs up nothing. */
+export const REPORT_BARRIERS: Record<string, string[]> = {
+  steps: ['steps', 'steep', 'slope'],
+  no_seat: ['rest_gap', 'long_rest_gap'],
+  no_shelter: ['no_shelter'],
+  broken_path: ['surface', 'obstruction'],
+  crossing: ['crossing', 'silent_signal', 'no_tactile'],
+  dark: ['dark'],
+  blocked: ['obstruction'],
+  slope: ['slope', 'steep'],
+  other: [],
+}
+
+/**
+ * Resident reports per gap: reports within `withinM` of the gap point or any of its segments,
+ * whose category backs up the gap's barrier. Returns gap id -> report ids.
+ * ponytail: O(reports x gaps x segments); fine for hundreds of reports per region.
+ */
+export function reportsByGap(gaps: Gap[], reports: { id: number | string; lat: number; lng: number; category: string }[], segs: Map<string, SegInfo>, withinM = 60): Map<string, (number | string)[]> {
+  const out = new Map<string, (number | string)[]>()
+  for (const r of reports) {
+    if (r.lat == null || r.lng == null) continue
+    const kinds = REPORT_BARRIERS[r.category] ?? []
+    if (!kinds.length) continue
+    const p: LngLat = [r.lng, r.lat]
+    for (const g of gaps) {
+      if (!kinds.includes(g.barrier)) continue
+      const near = metresBetween(p, g.at) <= withinM || g.segs.some(id => { const s = segs.get(id); return !!s && distToLine(p, s.coords) <= withinM })
+      if (near) { if (!out.has(g.id)) out.set(g.id, []); out.get(g.id)!.push(r.id) }
+    }
   }
   return out
 }
