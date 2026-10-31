@@ -44,12 +44,12 @@ export default function PickMap({ start, onPick, onCancel }: {
   }, [])
   return (
     <div className="r-stack">
-      <p className="r-why">Tap the map where the problem is. Pinch to zoom in.</p>
+      <p className="r-muted">Tap the map where the problem is. Pinch to zoom in.</p>
       <div ref={el} className="r-map" />
       <button type="button" className="r-btn r-primary" disabled={!pin} onClick={() => pin && onPick(pin)}>
         {pin ? 'Use this spot' : 'Tap the map first'}
       </button>
-      <button type="button" className="r-btn" onClick={onCancel}>Back</button>
+      <button type="button" className="r-link r-center" onClick={onCancel}>Cancel</button>
     </div>
   )
 }

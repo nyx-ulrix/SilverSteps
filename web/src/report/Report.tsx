@@ -1,19 +1,30 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
-import { ArrowLeftIcon, CameraIcon, CheckCircleIcon, ImagesIcon, MapPinIcon, NavigationArrowIcon, WarningIcon } from '@phosphor-icons/react'
-import { BarrierBadge } from '../Badge.tsx'
-import { CATEGORIES, catOf, type Category } from '../categories.ts'
+import {
+  ArrowLeftIcon, CameraIcon, CheckCircleIcon, CheckIcon, MapPinIcon, WarningIcon,
+  StairsIcon, ChairIcon, UmbrellaIcon, WarningCircleIcon, TrafficSignIcon, MoonStarsIcon, ChatCircleTextIcon, type Icon,
+} from '@phosphor-icons/react'
+import type { Category } from '../categories.ts'
 
-// The map is only fetched if someone taps "Pick on a map".
+// The map is only fetched if GPS fails and someone taps "Pick on a map".
 const PickMap = lazy(() => import('./PickMap.tsx'))
 
-type Where = { lat: number; lng: number; accuracy?: number; region?: string | null } | { hint: string }
-type Draft = { where: Where | null; photo: string | null; category: Category | null; description: string }
-type Step = 'where' | 'photo' | 'what' | 'review' | 'done'
-const EMPTY: Draft = { where: null, photo: null, category: null, description: '' }
-const SAVED = 'ss-report-unsent'
+/** Seven plain choices; each maps onto an API category. The AI reads the photo and note for detail. */
+const TILES: { key: Category; label: string; icon: Icon }[] = [
+  { key: 'steps', label: 'Steps or steep slope', icon: StairsIcon },
+  { key: 'no_seat', label: 'No place to sit', icon: ChairIcon },
+  { key: 'no_shelter', label: 'No shelter from sun or rain', icon: UmbrellaIcon },
+  { key: 'broken_path', label: 'Path broken or blocked', icon: WarningCircleIcon },
+  { key: 'crossing', label: 'Hard to cross the road', icon: TrafficSignIcon },
+  { key: 'dark', label: 'Too dark at night', icon: MoonStarsIcon },
+  { key: 'other', label: 'Something else', icon: ChatCircleTextIcon },
+]
 
+type Place = { lat: number; lng: number; accuracy?: number } | { hint: string }
+type Gps = { state: 'finding' } | { state: 'ok'; lat: number; lng: number; accuracy: number; region: string | null } | { state: 'failed' }
+type Draft = { place: Place | null; photo: string | null; category: Category | null; note: string }
+const SAVED = 'ss-report-unsent'
 const load = (): Draft | null => { try { const s = localStorage.getItem(SAVED); return s ? JSON.parse(s) : null } catch { return null } }
-const save = (d: Draft | null) => { try { if (d) localStorage.setItem(SAVED, JSON.stringify(d)); else localStorage.removeItem(SAVED) } catch { /* storage full or blocked: data stays on screen */ } }
+const save = (d: Draft | null) => { try { if (d) localStorage.setItem(SAVED, JSON.stringify(d)); else localStorage.removeItem(SAVED) } catch { /* storage blocked: data stays on screen */ } }
 
 /** Downscale to a 1600 px long edge as JPEG. Re-encoding through a canvas also drops EXIF, including GPS. */
 async function shrink(file: File): Promise<string> {
@@ -30,233 +41,185 @@ async function shrink(file: File): Promise<string> {
 }
 
 export default function Report() {
-  const [step, setStep] = useState<Step>('where')
-  const [d, setD] = useState<Draft>(EMPTY)
+  const [screen, setScreen] = useState<1 | 2 | 'done'>(1)
+  const [photo, setPhoto] = useState<string | null>(null)
+  const [category, setCategory] = useState<Category | null>(null)
+  const [note, setNote] = useState('')
+  const [noteOpen, setNoteOpen] = useState(false)
+  const [gps, setGps] = useState<Gps>({ state: 'finding' })
+  const [manual, setManual] = useState<Place | null>(null) // chosen by map pin or typed block when GPS fails
+  const [where, setWhere] = useState<'chip' | 'ask' | 'map' | 'type'>('chip')
+  const [hint, setHint] = useState('')
   const [unsent, setUnsent] = useState<Draft | null>(load)
-  const [sent, setSent] = useState<{ id: string | number } | null>(null)
+  const [sentId, setSentId] = useState<string | number | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const head = useRef<HTMLHeadingElement>(null)
-  // Move focus to each new screen's heading so screen readers announce it.
-  useEffect(() => { head.current?.focus() }, [step])
+  const cam = useRef<HTMLInputElement>(null), gal = useRef<HTMLInputElement>(null)
 
-  const go = (s: Step) => { setError(null); setStep(s); scrollTo(0, 0) }
-  const set = (p: Partial<Draft>) => setD(x => ({ ...x, ...p }))
+  // Ask for the location quietly as soon as the page opens; most people never see a location step.
+  useEffect(() => {
+    if (!navigator.geolocation) { setGps({ state: 'failed' }); return }
+    navigator.geolocation.getCurrentPosition(async pos => {
+      const { latitude: lat, longitude: lng, accuracy } = pos.coords
+      let region: string | null = null
+      try { const r = await fetch(`/api/regions/locate?lat=${lat}&lng=${lng}`); if (r.ok) region = (await r.json()).name ?? null } catch { /* name is optional */ }
+      setGps({ state: 'ok', lat, lng, accuracy, region })
+    }, () => setGps({ state: 'failed' }), { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 })
+  }, [])
+  useEffect(() => { head.current?.focus() }, [screen])
+  useEffect(() => { if (gps.state === 'failed' && !manual) setWhere('ask') }, [gps.state, manual])
+
+  const place: Place | null = manual ?? (gps.state === 'ok' ? { lat: gps.lat, lng: gps.lng, accuracy: gps.accuracy } : null)
+  const go = (s: 1 | 2 | 'done') => { setError(null); setScreen(s); scrollTo(0, 0) }
+
+  const pickFile = async (f: File | undefined) => {
+    if (!f) return
+    setBusy(true)
+    try { setPhoto(await shrink(f)); go(2) } catch { setError('That photo could not be opened. Please try another one.') } finally { setBusy(false) }
+  }
 
   const send = async () => {
+    if (!category || !place) return
     setBusy(true); setError(null)
-    const w = d.where!
+    const draft: Draft = { place, photo, category, note }
     const body = {
-      ...('hint' in w ? { address_hint: w.hint } : { lat: w.lat, lng: w.lng, accuracy_m: w.accuracy ? Math.round(w.accuracy) : undefined }),
-      category: d.category, description: d.description.trim() || undefined, photo: d.photo ?? undefined,
+      ...('hint' in place ? { address_hint: place.hint } : { lat: place.lat, lng: place.lng, accuracy_m: place.accuracy ? Math.round(place.accuracy) : undefined }),
+      category, description: note.trim() || undefined, photo: photo ?? undefined,
     }
     try {
       const r = await fetch('/api/reports', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
-      if (r.status === 503 && r.headers.get('x-silversteps') === 'backup') {
-        save(d)
-        setError("Reports can't be sent right now. Please try again later. Your report is saved on this phone.")
-      } else if (!r.ok) {
-        // 413: photo too big; 422: the server didn't accept the photo or the place (it says why in `detail`).
-        const detail = r.status === 422 ? await r.json().then(j => {
-          const d = j.detail
-          const m = typeof d === 'string' ? d : Array.isArray(d) ? d[0]?.msg : null
-          return typeof m === 'string' ? m.replace(/^Value error,\s*/i, '') : null
-        }, () => null) : null
-        setError(r.status === 413 ? 'The photo is too big. Please take it again or skip the photo.'
-          : r.status === 422 ? `We couldn't accept this report${detail ? `: ${detail}` : ''}. Please check the place and photo, then try again.`
-            : 'Something went wrong while sending. Please try again.')
+      if (r.ok) {
+        setSentId((await r.json()).id); save(null); setUnsent(null); go('done')
+      } else if (r.status === 503 && r.headers.get('x-silversteps') === 'backup') {
+        save(draft); setError("Reports can't be sent right now. Please try again later. Your report is saved on this phone.")
+      } else if (r.status === 413) {
+        setError('The photo is too big. Please take it again, or send without a photo.')
+      } else if (r.status === 422) {
+        const j = await r.json().catch(() => null)
+        const m = typeof j?.detail === 'string' ? j.detail : Array.isArray(j?.detail) ? j.detail[0]?.msg : null
+        setError(`We couldn't accept this report${m ? `: ${String(m).replace(/^Value error,\s*/i, '')}` : ''}. Please check the place, then try again.`)
       } else {
-        const out = await r.json()
-        save(null); setUnsent(null); setSent(out); go('done')
+        setError('Something went wrong. Please try again.')
       }
     } catch {
-      save(d)
-      setError("We couldn't reach the server. Check your internet connection and try again. Your report is saved on this phone.")
+      save(draft); setError("We couldn't reach the server. Check your internet, then try again. Your report is saved on this phone.")
     } finally { setBusy(false) }
   }
 
-  const progress = step === 'where' ? 1 : step === 'photo' ? 2 : step === 'what' ? 3 : 0
+  const resume = (d: Draft) => {
+    setPhoto(d.photo); setCategory(d.category); setNote(d.note); setNoteOpen(!!d.note)
+    if (d.place) setManual(d.place)
+    go(2)
+  }
+  const restart = () => {
+    setPhoto(null); setCategory(null); setNote(''); setNoteOpen(false); setManual(null); setHint(''); setWhere(gps.state === 'failed' ? 'ask' : 'chip'); go(1)
+  }
+
+  const chipText = manual ? ('hint' in manual ? manual.hint : 'Pinned on the map')
+    : gps.state === 'ok' ? (gps.region ? `Near ${gps.region}` : 'Near you') : gps.state === 'finding' ? 'Finding where you are' : null
 
   return (
     <main className="r-wrap">
       <header className="r-head">
-        <p className="r-brand">SilverSteps</p>
-        {progress > 0 && <p className="r-progress" aria-live="polite">Step {progress} of 3</p>}
-        {step === 'review' && <p className="r-progress">Check and send</p>}
+        {screen === 2 && (
+          <button type="button" className="r-back" onClick={() => go(1)} aria-label="Back to the photo"><ArrowLeftIcon size={26} /></button>
+        )}
+        <p className="r-title">Report a problem</p>
+        {screen !== 'done' && <p className="r-progress">{screen} of 2</p>}
       </header>
 
-      {step === 'where' && (
-        <>
+      {screen === 1 && (
+        <section className="r-stack" aria-labelledby="h1">
           {unsent && (
-            <div className="r-card r-unsent" role="status">
+            <div className="r-card" role="status">
               <p>You have a report that was not sent yet.</p>
-              <button type="button" className="r-btn r-primary" onClick={() => { setD(unsent); go('review') }}>Open it</button>
+              <button type="button" className="r-btn r-primary" onClick={() => resume(unsent)}>Send it now</button>
             </div>
           )}
-          <Where head={head} onDone={w => { set({ where: w }); go('photo') }} current={d.where} />
-        </>
-      )}
-      {step === 'photo' && (
-        <Photo head={head} photo={d.photo} onPhoto={p => set({ photo: p })} onBack={() => go('where')} onNext={() => go('what')} />
-      )}
-      {step === 'what' && (
-        <What head={head} d={d} set={set} onBack={() => go('photo')} onNext={() => go('review')} />
-      )}
-      {step === 'review' && (
-        <section className="r-stack" aria-labelledby="h-review">
-          <h1 id="h-review" ref={head} tabIndex={-1}>Check your report</h1>
-          <div className="r-card r-summary">
-            <p><strong>Where:</strong> {d.where && ('hint' in d.where ? d.where.hint : d.where.region ? `Near ${d.where.region}` : 'Your location')}</p>
-            <p className="r-cat-line">
-              <strong>Problem:</strong>
-              {d.category && <><BarrierBadge barrier={catOf(d.category).barrier} severity={2} size={22} />{catOf(d.category).label}</>}
-            </p>
-            {d.description.trim() && <p><strong>What you said:</strong> {d.description.trim()}</p>}
-            {d.photo ? <img src={d.photo} alt="Your photo" className="r-preview" /> : <p><strong>Photo:</strong> none</p>}
-          </div>
-          {error && <p className="r-error" role="alert"><WarningIcon aria-hidden size={24} />{error}</p>}
-          <button type="button" className="r-btn r-primary" onClick={send} disabled={busy || !d.where || !d.category}>
-            {busy ? 'Sending' : 'Send report'}
+          <h1 id="h1" ref={head} tabIndex={-1}>Take a photo of the problem</h1>
+          <input ref={cam} type="file" accept="image/*" capture="environment" hidden onChange={e => pickFile(e.target.files?.[0])} />
+          <input ref={gal} type="file" accept="image/*" hidden onChange={e => pickFile(e.target.files?.[0])} />
+          <button type="button" className="r-btn r-primary r-huge" onClick={() => cam.current?.click()} disabled={busy}>
+            <CameraIcon aria-hidden size={36} />{busy ? 'Getting the photo ready' : 'Take a photo'}
           </button>
-          <button type="button" className="r-btn" onClick={() => go('what')}>Change something</button>
+          <p className="r-muted r-center">Avoid faces and car plates.</p>
+          {error && <p className="r-error" role="alert"><WarningIcon aria-hidden size={24} />{error}</p>}
+          <button type="button" className="r-link r-center" onClick={() => gal.current?.click()}>Choose a photo instead</button>
+          <button type="button" className="r-link r-center r-quiet" onClick={() => go(2)}>No photo? Continue</button>
         </section>
       )}
-      {step === 'done' && (
+
+      {screen === 2 && (
+        <section className="r-stack r-s2" aria-labelledby="h2">
+          <h1 id="h2" ref={head} tabIndex={-1}>What is the problem?</h1>
+
+          {where === 'map' ? (
+            <Suspense fallback={<p className="r-muted">Loading the map</p>}>
+              <PickMap start={gps.state === 'ok' ? [gps.lng, gps.lat] : null}
+                onPick={([lng, lat]) => { setManual({ lat, lng }); setWhere('chip') }} onCancel={() => setWhere(manual || gps.state === 'ok' ? 'chip' : 'ask')} />
+            </Suspense>
+          ) : where === 'type' ? (
+            <form className="r-stack" onSubmit={e => { e.preventDefault(); if (hint.trim()) { setManual({ hint: hint.trim() }); setWhere('chip') } }}>
+              <label htmlFor="hint" className="r-label">Block number and street</label>
+              <input id="hint" className="r-input" value={hint} onChange={e => setHint(e.target.value)} autoComplete="street-address" aria-describedby="hint-ex" autoFocus />
+              <p id="hint-ex" className="r-muted">For example: Blk 314 Ang Mo Kio Ave 3</p>
+              <button type="submit" className="r-btn r-primary" disabled={!hint.trim()}>Use this</button>
+            </form>
+          ) : where === 'ask' ? (
+            <div className="r-card">
+              <p className="r-label">Where is it?</p>
+              <p className="r-muted">So the Town Council knows where to look.</p>
+              <button type="button" className="r-btn" onClick={() => setWhere('map')}><MapPinIcon aria-hidden size={26} />Pick on a map</button>
+              <button type="button" className="r-btn" onClick={() => setWhere('type')}>Type the block number</button>
+            </div>
+          ) : (
+            <div className="r-top">
+              {photo && <img src={photo} alt="Your photo" className="r-thumb" />}
+              <p className="r-chip"><MapPinIcon aria-hidden size={22} /><span>{chipText}</span></p>
+              <button type="button" className="r-link r-small" onClick={() => setWhere('ask')}>Change</button>
+            </div>
+          )}
+
+          {(where === 'chip' || where === 'ask') && (
+            <>
+              <div className="r-tiles" role="radiogroup" aria-labelledby="h2">
+                {TILES.map(t => (
+                  <button key={t.key} type="button" role="radio" aria-checked={category === t.key} className="r-tile" onClick={() => setCategory(t.key)}>
+                    <t.icon aria-hidden size={34} />
+                    <span>{t.label}</span>
+                    {category === t.key && <CheckIcon aria-hidden size={22} className="r-tick" />}
+                  </button>
+                ))}
+              </div>
+              {noteOpen ? (
+                <div className="r-stack r-note">
+                  <label htmlFor="note" className="r-label">Your note (optional)</label>
+                  <textarea id="note" className="r-input" rows={3} maxLength={1000} value={note} onChange={e => setNote(e.target.value)} aria-describedby="note-hint" autoFocus />
+                  <p id="note-hint" className="r-muted">You can tap the microphone on your keyboard to speak.</p>
+                </div>
+              ) : (
+                <button type="button" className="r-link" onClick={() => setNoteOpen(true)}>Add a note (optional)</button>
+              )}
+              {error && <p className="r-error" role="alert"><WarningIcon aria-hidden size={24} />{error}</p>}
+              <div className="r-bar">
+                <button type="button" className="r-btn r-primary r-send" onClick={send} disabled={!category || !place || busy}>
+                  {busy ? 'Sending' : !category ? 'Choose a problem above' : !place ? (gps.state === 'finding' ? 'Finding where you are' : 'Tell us where it is') : 'Send report'}
+                </button>
+              </div>
+            </>
+          )}
+        </section>
+      )}
+
+      {screen === 'done' && (
         <section className="r-stack r-done" aria-labelledby="h-done">
-          <CheckCircleIcon aria-hidden size={64} className="r-ok" />
-          <h1 id="h-done" ref={head} tabIndex={-1}>Thank you. Your report has been sent.</h1>
-          <p>Your report number is <strong>{sent?.id}</strong>.</p>
-          <p>The Town Council can see it on the SilverSteps map.</p>
-          <button type="button" className="r-btn r-primary" onClick={() => { setD(EMPTY); setSent(null); go('where') }}>Report another</button>
+          <CheckCircleIcon aria-hidden size={88} className="r-ok" />
+          <h1 id="h-done" ref={head} tabIndex={-1}>Thank you. Your report is on the planners' map.</h1>
+          <button type="button" className="r-btn r-primary r-huge" onClick={restart}>Report another</button>
+          {sentId != null && <p className="r-muted r-tiny">Report number {sentId}</p>}
         </section>
       )}
     </main>
-  )
-}
-
-function Where({ head, onDone, current }: { head: React.Ref<HTMLHeadingElement>; onDone: (w: Where) => void; current: Where | null }) {
-  const [state, setState] = useState<'idle' | 'finding' | 'found' | 'failed' | 'map' | 'type'>(current ? 'found' : 'idle')
-  const [where, setWhere] = useState<Where | null>(current)
-  const [hint, setHint] = useState('')
-  const [msg, setMsg] = useState<string | null>(null)
-
-  const locate = () => {
-    if (!navigator.geolocation) { setState('failed'); setMsg('This phone cannot share its location. Please pick on a map or type the address.'); return }
-    setState('finding'); setMsg(null)
-    navigator.geolocation.getCurrentPosition(async pos => {
-      const w = { lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy, region: null as string | null }
-      try {
-        const r = await fetch(`/api/regions/locate?lat=${w.lat}&lng=${w.lng}`)
-        if (r.ok) w.region = (await r.json()).name ?? null
-      } catch { /* region name is a nice-to-have */ }
-      setWhere(w); setState('found')
-    }, err => {
-      setState('failed')
-      setMsg(err.code === err.PERMISSION_DENIED
-        ? 'Location is turned off for this page. You can pick the place on a map or type the address instead.'
-        : 'We could not find your location. Please try again, pick on a map, or type the address.')
-    }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 })
-  }
-
-  return (
-    <section className="r-stack" aria-labelledby="h-where">
-      <h1 id="h-where" ref={head} tabIndex={-1}>Where is the problem?</h1>
-      <p className="r-why">So the Town Council knows where to look.</p>
-
-      {state === 'found' && where && 'lat' in where ? (
-        <div className="r-card" role="status">
-          <p className="r-found"><MapPinIcon aria-hidden size={28} />{where.region ? `Found you near ${where.region}.` : 'Found your location.'}</p>
-          {where.accuracy != null && <p className="r-muted">Accurate to about {Math.round(where.accuracy)} metres.</p>}
-          <button type="button" className="r-btn r-primary" onClick={() => onDone(where)}>Yes, this is the place</button>
-          <button type="button" className="r-btn" onClick={() => setState('map')}>Move the pin on a map</button>
-        </div>
-      ) : state === 'map' ? (
-        <Suspense fallback={<p className="r-muted">Loading the map</p>}>
-          <PickMap start={where && 'lat' in where ? [where.lng, where.lat] : null}
-            onPick={([lng, lat]) => onDone({ lat, lng })} onCancel={() => setState(where ? 'found' : 'idle')} />
-        </Suspense>
-      ) : state === 'type' ? (
-        <form className="r-stack" onSubmit={e => { e.preventDefault(); if (hint.trim()) onDone({ hint: hint.trim() }) }}>
-          <label htmlFor="hint" className="r-label">Block number and street</label>
-          <input id="hint" className="r-input" value={hint} onChange={e => setHint(e.target.value)} autoComplete="street-address" placeholder="" aria-describedby="hint-help" />
-          <p id="hint-help" className="r-muted">For example: Blk 314 Ang Mo Kio Ave 3</p>
-          <button type="submit" className="r-btn r-primary" disabled={!hint.trim()}>Next</button>
-          <button type="button" className="r-btn" onClick={() => setState('idle')}>Back</button>
-        </form>
-      ) : (
-        <>
-          <button type="button" className="r-btn r-primary r-big" onClick={locate} disabled={state === 'finding'}>
-            <NavigationArrowIcon aria-hidden size={28} />{state === 'finding' ? 'Finding you' : 'Use my location'}
-          </button>
-          {msg && <p className="r-error" role="alert"><WarningIcon aria-hidden size={24} />{msg}</p>}
-          <button type="button" className="r-btn" onClick={() => setState('map')}><MapPinIcon aria-hidden size={24} />Pick on a map</button>
-          <button type="button" className="r-btn" onClick={() => setState('type')}>Type the address</button>
-        </>
-      )}
-    </section>
-  )
-}
-
-function Photo({ head, photo, onPhoto, onBack, onNext }: {
-  head: React.Ref<HTMLHeadingElement>; photo: string | null; onPhoto: (p: string | null) => void; onBack: () => void; onNext: () => void
-}) {
-  const cam = useRef<HTMLInputElement>(null), gal = useRef<HTMLInputElement>(null)
-  const [busy, setBusy] = useState(false)
-  const [err, setErr] = useState<string | null>(null)
-  const pick = async (f: File | undefined) => {
-    if (!f) return
-    setBusy(true); setErr(null)
-    try { onPhoto(await shrink(f)) } catch { setErr('That photo could not be opened. Please try another one.') } finally { setBusy(false) }
-  }
-  return (
-    <section className="r-stack" aria-labelledby="h-photo">
-      <h1 id="h-photo" ref={head} tabIndex={-1}>Add a photo</h1>
-      <p className="r-why">A photo helps them see the problem. Please avoid people's faces and car plates.</p>
-      <input ref={cam} type="file" accept="image/*" capture="environment" hidden onChange={e => pick(e.target.files?.[0])} />
-      <input ref={gal} type="file" accept="image/*" hidden onChange={e => pick(e.target.files?.[0])} />
-      {photo ? (
-        <>
-          <img src={photo} alt="Your photo" className="r-preview" />
-          <button type="button" className="r-btn r-primary" onClick={onNext}>Use this photo</button>
-          <button type="button" className="r-btn" onClick={() => cam.current?.click()}><CameraIcon aria-hidden size={24} />Retake</button>
-          <button type="button" className="r-btn" onClick={() => onPhoto(null)}>Remove photo</button>
-        </>
-      ) : (
-        <>
-          <button type="button" className="r-btn r-primary r-big" onClick={() => cam.current?.click()} disabled={busy}>
-            <CameraIcon aria-hidden size={28} />{busy ? 'Getting the photo ready' : 'Take a photo'}
-          </button>
-          <button type="button" className="r-btn" onClick={() => gal.current?.click()} disabled={busy}><ImagesIcon aria-hidden size={24} />Choose from gallery</button>
-          <button type="button" className="r-btn" onClick={onNext}>Skip photo</button>
-        </>
-      )}
-      {err && <p className="r-error" role="alert"><WarningIcon aria-hidden size={24} />{err}</p>}
-      <button type="button" className="r-link" onClick={onBack}><ArrowLeftIcon aria-hidden size={20} />Back</button>
-    </section>
-  )
-}
-
-function What({ head, d, set, onBack, onNext }: {
-  head: React.Ref<HTMLHeadingElement>; d: Draft; set: (p: Partial<Draft>) => void; onBack: () => void; onNext: () => void
-}) {
-  return (
-    <section className="r-stack" aria-labelledby="h-what">
-      <h1 id="h-what" ref={head} tabIndex={-1}>What is the problem?</h1>
-      <div className="r-cats" role="radiogroup" aria-labelledby="h-what">
-        {CATEGORIES.map(c => (
-          <button key={c.key} type="button" role="radio" aria-checked={d.category === c.key} className="r-cat" onClick={() => set({ category: c.key })}>
-            <BarrierBadge barrier={c.barrier} severity={2} size={26} />
-            <span>{c.label}</span>
-          </button>
-        ))}
-      </div>
-      <label htmlFor="desc" className="r-label">Tell us more (you can skip this)</label>
-      <textarea id="desc" className="r-input" rows={4} maxLength={1000} value={d.description}
-        onChange={e => set({ description: e.target.value })} aria-describedby="desc-count" />
-      <p id="desc-count" className="r-muted">{1000 - d.description.length} letters left</p>
-      <button type="button" className="r-btn r-primary" onClick={onNext} disabled={!d.category}>Next</button>
-      {!d.category && <p className="r-muted">Choose one problem to continue.</p>}
-      <button type="button" className="r-link" onClick={onBack}><ArrowLeftIcon aria-hidden size={20} />Back</button>
-    </section>
   )
 }
