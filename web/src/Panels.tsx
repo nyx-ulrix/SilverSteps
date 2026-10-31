@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
-  ArrowLeftIcon, CameraIcon, ChatCircleTextIcon, CheckIcon, FireIcon, TrafficSignalIcon, XIcon, PlusIcon, ArrowCounterClockwiseIcon, TrashIcon, CrosshairIcon,
+  ArrowLeftIcon, CameraIcon, MegaphoneIcon, CheckIcon, FireIcon, TrafficSignalIcon, XIcon, PlusIcon, ArrowCounterClockwiseIcon, TrashIcon, CrosshairIcon,
   UsersThreeIcon, WarningIcon, ArrowClockwiseIcon,
 } from '@phosphor-icons/react'
-import { BarrierBadge } from './Badge.tsx'
+import { BarrierBadge, ReportBadge } from './Badge.tsx'
 import { ago, CATEGORIES, catOf, type Category, type Cluster, type ReportRow } from './categories.ts'
 import { FAMILY_LABEL, FAMILY_OF, type Family } from './MapView.tsx'
 import { sortGaps, type BlockRoute, type RiskArea } from './logic.ts'
@@ -123,7 +123,7 @@ export function GapList({ gaps: all, townNames, onPick, splitPlanned = true, rep
                 <span className="chips">
                   <span className="chip">Fix: {g.fix}</span>
                   {(reported?.get(g.id)?.length ?? 0) > 0 && (
-                    <span className="chip chip-reported"><ChatCircleTextIcon aria-hidden size={14} />{reported!.get(g.id)!.length} resident {reported!.get(g.id)!.length === 1 ? 'report' : 'reports'}</span>
+                    <span className="chip chip-reported"><MegaphoneIcon aria-hidden size={14} weight="fill" />{reported!.get(g.id)!.length} resident {reported!.get(g.id)!.length === 1 ? 'report' : 'reports'}</span>
                   )}
                   <span className="chip">~{short(g.foot)} trips/wk</span>
                   {g.planned ? <span className="chip chip-planned">Already planned</span> : <span className="chip chip-quiet">{EFFORT[g.effort]}</span>}
@@ -366,7 +366,7 @@ export function GapDetail({ gap, onHotspot, residentReports = 0, onOpenReports, 
       {gap.corrected && !removed && <ResidentMark />}
       {residentReports > 0 && (
         <button type="button" className="row gap-row" onClick={onOpenReports}>
-          <span className="badge sev-1" aria-hidden><ChatCircleTextIcon size={20} /></span>
+          <ReportBadge size={20} />
           <span className="gap-body">
             <span className="issue">{residentReports} resident {residentReports === 1 ? 'report' : 'reports'} here</span>
             <span className="row-meta">See what residents said in Reports</span>
@@ -731,8 +731,8 @@ export const clusterScore = (c: Cluster) => c.count * (c.ai?.severity ?? 1)
 const topCat = (c: Cluster) => Object.entries(c.categories).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'other'
 export const clusterTitle = (c: Cluster) => c.ai?.title ?? `${c.count} ${c.count === 1 ? 'report' : 'reports'}: ${catOf(topCat(c)).label}`
 
-export function ReportList({ clusters, loading, error, cats, onCat, range, onRange, region, onPick }: {
-  clusters: Cluster[]; loading: boolean; error: boolean; cats: Set<Category>; onCat: (c: Category) => void
+export function ReportList({ clusters, loading, stale, cats, onCat, range, onRange, region, onPick }: {
+  clusters: Cluster[]; loading: boolean; stale: string | null; cats: Set<Category>; onCat: (c: Category) => void
   range: Range; onRange: (r: Range) => void; region: string; onPick: (c: Cluster) => void
 }) {
   const [limit, setLimit] = useState(8)
@@ -757,7 +757,8 @@ export function ReportList({ clusters, loading, error, cats, onCat, range, onRan
           </button>
         ))}
       </div>
-      {loading ? <Skeleton rows={3} /> : error ? <Notice tone="error">Reports can't be loaded right now. They will refresh in a minute.</Notice> : !clusters.length ? (
+      {stale && <Notice>{stale}</Notice>}
+      {loading ? <Skeleton rows={3} /> : !clusters.length ? (stale ? null : 
         <p className="empty">No reports yet in {region}. Residents can send one at <a href={link}>{link.replace(/^https?:\/\//, '')}</a>.</p>
       ) : (
         <>
@@ -765,7 +766,7 @@ export function ReportList({ clusters, loading, error, cats, onCat, range, onRan
             {clusters.slice(0, limit).map(c => (
               <li key={c.id}>
                 <button type="button" className="row gap-row" data-at={`${c.lng},${c.lat}`} onClick={() => onPick(c)}>
-                  <BarrierBadge barrier={c.ai?.barrier && c.ai.barrier !== 'other' ? c.ai.barrier : catOf(topCat(c)).barrier} severity={c.ai?.severity ?? 1} />
+                  <ReportBadge size={20} />
                   <span className="gap-body">
                     <span className="issue">{clusterTitle(c)}</span>
                     <span className="row-meta">{c.count} {c.count === 1 ? 'report' : 'reports'}, last {ago(c.last)}</span>

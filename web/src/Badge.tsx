@@ -1,6 +1,6 @@
 import {
   StairsIcon, TrafficSignIcon, SpeakerSlashIcon, ArrowFatLineUpIcon, UmbrellaIcon, ChairIcon, WarningIcon,
-  MoonStarsIcon, TrendUpIcon, ProhibitIcon, FootprintsIcon, HandGrabbingIcon, ChatCircleTextIcon, type Icon,
+  MoonStarsIcon, TrendUpIcon, ProhibitIcon, FootprintsIcon, HandGrabbingIcon, ChatCircleTextIcon, MegaphoneIcon, type Icon,
 } from '@phosphor-icons/react'
 import { createRoot } from 'react-dom/client'
 import { flushSync } from 'react-dom'
@@ -77,6 +77,28 @@ export async function iconImage(I: Icon, bg: string, fg: string, halo: string, p
     `<circle cx="${g}" cy="${g}" r="${g - 2.5}" fill="${bg}" stroke="${halo}" stroke-width="4"/>` +
     `<svg x="${(px - s) / 2}" y="${(px - s) / 2}" width="${s}" height="${s}" viewBox="0 0 256 256" fill="${fg}" color="${fg}">${inner}</svg></svg>`
   const img = new Image(px, px)
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg)
+  await img.decode()
+  return img
+}
+
+/** Resident reports have their own identity: a yellow badge with an ink megaphone. */
+export function ReportBadge({ size = 18 }: { size?: number }) {
+  return <span className="rbadge" aria-hidden><MegaphoneIcon size={size} weight="fill" /></span>
+}
+
+/** Map image for a resident report: yellow disc, ink megaphone, dark 2px outline and a soft halo. 2x for 28px. */
+export async function reportImage(fill: string, ink: string, halo: string): Promise<HTMLImageElement> {
+  const box = document.createElement('div')
+  const root = createRoot(box)
+  flushSync(() => root.render(<MegaphoneIcon size={22} weight="fill" />))
+  const inner = box.innerHTML.replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '')
+  root.unmount()
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">` +
+    `<circle cx="32" cy="32" r="30" fill="${halo}" fill-opacity="0.55"/>` +
+    `<circle cx="32" cy="32" r="25" fill="${fill}" stroke="${ink}" stroke-width="4"/>` +
+    `<svg x="18" y="18" width="28" height="28" viewBox="0 0 256 256" fill="${ink}">${inner}</svg></svg>`
+  const img = new Image(64, 64)
   img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg)
   await img.decode()
   return img

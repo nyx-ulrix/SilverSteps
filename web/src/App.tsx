@@ -2,10 +2,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import type React from 'react'
 import type { Map as MLMap } from 'maplibre-gl'
 import type { FeatureCollection, LineString } from 'geojson'
-import { ChatCircleTextIcon, XIcon, InfoIcon, PathIcon, CaretUpIcon, CaretDownIcon, StackIcon, UsersIcon, WheelchairIcon, EyeIcon, FunnelIcon } from '@phosphor-icons/react'
+import { MegaphoneIcon, XIcon, InfoIcon, PathIcon, CaretUpIcon, CaretDownIcon, StackIcon, UsersIcon, WheelchairIcon, EyeIcon, FunnelIcon } from '@phosphor-icons/react'
 import MapView, { riskLetter, type BarrierIcon, FAMILY_LABEL, FAMILY_OF, MAP_COLORS, type Family, type FlyTarget, type Layers, type Scheme } from './MapView.tsx'
 import { api, ApiError, getJSON } from './api.ts'
-import { BarrierBadge } from './Badge.tsx'
+import { BarrierBadge, ReportBadge } from './Badge.tsx'
 import { CATEGORIES, CAT, type Category, type Cluster, type ReportRow } from './categories.ts'
 import {
   affects, applyCorrections, breaks, reportsByGap, decodePolyline, distToLine, metresBetween, hotspots, riskAreas, routeAccuracy, sortGaps, type BlockRoute, type Hotspot,
@@ -108,6 +108,9 @@ export default function App() {
   useEffect(() => { if (!town || segDrawn) return; const t = setTimeout(() => setSegDrawn(true), 3000); return () => clearTimeout(t) }, [town, segDrawn])
   // Resident reports (Reports view): fetched when the view opens and every 60 s while it stays open.
   const [clusters, setClusters] = useState<Cluster[] | null | 'error'>(null)
+  // A failed poll keeps the last good data; only 3 failures in a row show a calm note.
+  const [clusterFails, setClusterFails] = useState(0)
+  const [clustersAt, setClustersAt] = useState<Date | null>(null)
   const [reportRows, setReportRows] = useState<ReportRow[]>([])
   const [range, setRange] = useState<Range>('30')
   const [cats, setCats] = useState<Set<Category>>(() => new Set(CATEGORIES.map(c => c.key)))
@@ -158,7 +161,7 @@ export default function App() {
 
   // Lazy-load only the selected town's files.
   useEffect(() => {
-    setTown(null); setBlocks(null); setDests(null); setFeedback([]); setRoutes([]); setVision(undefined); setTownRoutes(null); setBlk(''); setSegDrawn(false); setClusters(null); setReportRows([]); setAllReports([]); setTownErr(false); setSaveError(null)
+    setTown(null); setBlocks(null); setDests(null); setFeedback([]); setRoutes([]); setVision(undefined); setTownRoutes(null); setBlk(''); setSegDrawn(false); setClusters(null); setClusterFails(0); setClustersAt(null); setReportRows([]); setAllReports([]); setTownErr(false); setSaveError(null)
     if (!slug) return
     let live = true
     const base = `/data/towns/${slug}`
@@ -292,7 +295,10 @@ export default function App() {
     let live = true
     const since = range === 'all' ? '' : `&since=${new Date(Date.now() - +range * 86400000).toISOString().slice(0, 10)}`
     const pull = () => {
-      getJSON<Cluster[]>(`/api/reports/clusters?town=${encodeURIComponent(slug)}${since}`).then(c => live && setClusters(c), () => live && setClusters(cs => (Array.isArray(cs) ? cs : 'error')))
+      getJSON<Cluster[]>(`/api/reports/clusters?town=${encodeURIComponent(slug)}${since}`).then(c => {
+        if (!live) return
+        setClusters(c); setClusterFails(0); setClustersAt(new Date())
+      }, () => live && setClusterFails(n => n + 1))
       getJSON<ReportRow[]>(`/api/reports?town=${encodeURIComponent(slug)}${since}`).then(r => live && setReportRows(r), () => {})
     }
     pull()
@@ -305,8 +311,8 @@ export default function App() {
     .sort((a, b) => clusterScore(b) - clusterScore(a)), [clusters, cats, who])
   const mapClusters = useMemo(() => (slug && listMode === 'reports' ? shownClusters.map(c => ({ id: c.id, at: [c.lng, c.lat] as LngLat, count: c.count })) : NONE), [slug, listMode, shownClusters])
   const reportDots = useMemo(() => {
-    const seen = new Set<string>(), out: LngLat[] = []
-    for (const r of [...recent, ...allReports]) if (r.lat != null && r.lng != null && !seen.has(String(r.id))) { seen.add(String(r.id)); out.push([r.lng, r.lat]) }
+    const seen = new Set<string>(), out: { id: string; at: LngLat }[] = []
+    for (const r of [...recent, ...allReports]) if (r.lat != null && r.lng != null && !seen.has(String(r.id))) { seen.add(String(r.id)); out.push({ id: String(r.id), at: [r.lng, r.lat] }) }
     return out
   }, [recent, allReports])
   // The cluster that holds the newest report, pulsed once when it arrives (Reports view).
@@ -677,7 +683,8 @@ export default function App() {
         </div>
         {listMode === 'reports' ? (
           <ReportList
-            clusters={shownClusters} loading={clusters === null} error={clusters === 'error'} cats={cats}
+            clusters={shownClusters} loading={clusters === null && clusterFails < 3} cats={cats}
+            stale={clusterFails >= 3 ? (clustersAt ? `Can't reach the server. Showing the last update from ${clustersAt.toLocaleTimeString('en-SG', { hour: 'numeric', minute: '2-digit' })}.` : "Can't reach the server. Reports will appear when it's back.") : null}
             onCat={k => setCats(prev => { const n = new Set(prev); if (n.has(k)) n.delete(k); else n.add(k); return n })}
             range={range} onRange={setRange} region={summary?.name ?? 'this region'} onPick={pickCluster}
           />
@@ -733,7 +740,7 @@ export default function App() {
         troutes={mapRoutes}
         routeHl={routeHl}
         residentDots={layers.reports ? reportDots : NONE}
-        pulseCluster={pulseClusterId}
+        pulseCluster={pulseClusterId} pulseReport={pulse ? String(pulse.id) : null}
         reportsMode={!!slug && view === 'main' && listMode === 'reports'} rclusters={mapClusters} selCluster={selCluster?.id ?? null} rdots={rdots}
         onCluster={id => { const c = shownClusters.find(x => x.id === id); if (c) pickCluster(c) }}
         context={selContext} bicons={bicons} selectedGap={selGap?.id ?? null} ring={selGap && selGap.len < 40 ? selGap.at : flashAt}
@@ -748,7 +755,7 @@ export default function App() {
       {panHint && <p className="pan-hint">Right-drag to move the map</p>}
       {toast && (
         <div className="toast" role="status">
-          <ChatCircleTextIcon aria-hidden size={22} />
+          <ReportBadge size={18} />
           <p>New report: {CAT[toast.category]?.label ?? 'Something else'} near {toast.region ?? (toast.town ? townNames[toast.town] : null) ?? 'an unmapped spot'}</p>
           <button type="button" className="btn btn-secondary" onClick={() => showReport(toast)}>Show</button>
           <button type="button" className="btn-icon close" aria-label="Dismiss" onClick={() => setToast(null)}><XIcon aria-hidden size={18} /></button>
@@ -769,7 +776,7 @@ export default function App() {
               ? <button type="button" className="peek-btn" onClick={() => { setSheetOpen(true); topItem.open() }}>{topItem.text}</button>
               : <p className="tagline">{mobile && !sheetOpen ? peekTitle : 'Where older residents walk most, and what to fix first. Modelled estimates.'}</p>}
           </div>
-          <a className="btn-link how report-link" href="/report"><ChatCircleTextIcon aria-hidden size={20} /><span className="label">Report a problem</span></a>
+          <a className="btn-link how report-link" href="/report"><MegaphoneIcon aria-hidden size={20} weight="fill" /><span className="label">Report a problem</span></a>
           <button type="button" className="btn-link how" onClick={() => { setView(v => (v === 'about' ? 'main' : 'about')); setSheetOpen(true) }} aria-pressed={view === 'about'}>
             <InfoIcon aria-hidden size={20} /><span className="label">How this works</span>
           </button>
@@ -817,7 +824,11 @@ function MapKey({ layers, setLayers, scheme, town, footBreaks, subzoneBreaks, ro
               {toggle('footfall', 'Senior footfall', { background: `linear-gradient(90deg, ${c.ramp.join(',')})` })}
               {layers.footfall && footBreaks.length > 0 && ramp('Estimated senior trips per week (modelled)', footBreaks)}
               {toggle('risk', 'High risk areas', { background: `${c.risk}33`, border: `2px dashed ${c.risk}`, borderRadius: '50%' })}
-              {toggle('reports', 'Resident reports', { background: c.report, borderRadius: '50%', width: 12, height: 12, margin: '0 5px' })}
+              <label className="toggle">
+                <input type="checkbox" checked={layers.reports} onChange={e => setLayers(l => ({ ...l, reports: e.target.checked }))} />
+                <ReportBadge size={14} />
+                Resident reports
+              </label>
               {toggle('icons', 'Barrier icons', { background: 'var(--sev3-bg)', border: '2px solid var(--sev3-fg)', borderRadius: '50%' })}
               {layers.icons && labels && present.length > 0 && (
                 <ul className="icon-legend">

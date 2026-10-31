@@ -529,3 +529,24 @@ textarea { resize: vertical; }
 .toast .btn { min-height: 40px; padding: 0 12px; }
 @media (min-width: 768px) { .toast { left: calc(432px + (100% - 432px) / 2); } }
 @media (max-width: 767px) { .toast { top: 64px; bottom: auto; } }
+
+/* ---------- resident reports: yellow + megaphone everywhere ---------- */
+:root { --report: #F5C400; --report-ink: #1c1917; }
+@media (prefers-color-scheme: dark) { :root { --report: #FFD43B; } }
+.rbadge {
+  flex: none; display: inline-grid; place-items: center; width: 36px; height: 36px; border-radius: 50%;
+  background: var(--report); color: var(--report-ink); box-shadow: 0 0 0 2px var(--report-ink);
+}
+.toggle .rbadge, .chip .rbadge { width: 22px; height: 22px; box-shadow: 0 0 0 1.5px var(--report-ink); }
+.toast .rbadge { width: 32px; height: 32px; }
+.chip-reported { background: var(--report); color: var(--report-ink); border-color: var(--report-ink); }
+.chip-reported svg { color: var(--report-ink); }
+.rcount {
+  min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; display: grid; place-items: center;
+  background: var(--report-ink); color: #fff; font: 700 0.72rem/1 'Public Sans Variable', system-ui, sans-serif;
+  border: 2px solid var(--report); pointer-events: none;
+}
+.has-sel .rcount { opacity: 0.6; }
+/* selected pin: ~40 px with a white ring */
+.pin { width: 40px !important; height: 40px !important; border-width: 6px !important; border-color: #fff !important; }
+.pin-from { border-color: var(--accent) !important; background: #fff !important; }
