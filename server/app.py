@@ -260,7 +260,7 @@ def locate(lng, lat):
 class ReportIn(BaseModel):
     lat: Optional[float] = None
     lng: Optional[float] = None
-    accuracy_m: Optional[float] = Field(None, ge=0, le=100000)
+    accuracy_m: Optional[float] = Field(None, ge=0)  # laptops locating by Wi-Fi/IP can claim 100+ km; keep the report
     address_hint: Optional[str] = Field(None, max_length=200)
     category: Category
     description: Optional[str] = Field(None, max_length=1000)
@@ -273,6 +273,8 @@ class ReportIn(BaseModel):
 
     @model_validator(mode="after")
     def where(self):
+        if self.accuracy_m is not None:
+            self.accuracy_m = min(self.accuracy_m, 100000)
         if self.lat is None or self.lng is None:
             if not self.address_hint:
                 raise ValueError("location or address_hint required")
@@ -472,6 +474,18 @@ def report_clusters(town: str = Query(pattern=TOWN), category: Optional[str] = Q
                         "ai": json.loads(cached.ai) if cached else None, "ai_pending": bool(not cached and ai_on)})
     out.sort(key=lambda c: -c["count"] * ((c["ai"] or {}).get("severity") or 1))
     return out
+
+
+from fastapi.exceptions import RequestValidationError
+from fastapi.exception_handlers import request_validation_exception_handler
+
+
+@app.exception_handler(RequestValidationError)
+async def log_rejections(request: Request, exc: RequestValidationError):
+    # Field names and messages only (no report text or photo), so failed reports can be diagnosed from the logs.
+    log.warning("Rejected %s %s: %s", request.method, request.url.path,
+                [(".".join(map(str, e.get("loc", []))), e.get("msg")) for e in exc.errors()])
+    return await request_validation_exception_handler(request, exc)
 
 
 @app.middleware("http")

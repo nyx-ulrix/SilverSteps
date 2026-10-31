@@ -72,3 +72,9 @@ def test_recent():
     rec = c.get("/api/reports/recent").json()
     assert rec[0]["id"] == a and rec[0]["town"] is None  # reports outside any region still show up
     assert c.get("/api/reports/recent", params={"after": a}).json() == []
+
+
+def test_coarse_accuracy_kept():
+    m.HITS.clear()
+    r = c.post("/api/reports", json={"lat": 1.2962745, "lng": 103.786772, "accuracy_m": 150000, "category": "steps"})
+    assert r.status_code == 201
