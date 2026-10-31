@@ -7,6 +7,8 @@ import type { Category } from '../categories.ts'
 
 // The map is only fetched if GPS fails and someone taps "Pick on a map".
 const PickMap = lazy(() => import('./PickMap.tsx'))
+// Loaded once the first location fix (or postal code) arrives.
+const MiniMap = lazy(() => import('./PickMap.tsx').then(m => ({ default: m.MiniMap })))
 
 /** Seven plain choices; each maps onto an API category. The AI reads the photo and note for detail. */
 const TILES: { key: Category; label: string; icon: Icon }[] = [
@@ -52,6 +54,7 @@ export default function Report() {
   const [where, setWhere] = useState<'chip' | 'ask' | 'map'>('chip')
   const [unsent, setUnsent] = useState<Draft | null>(load)
   const [sentId, setSentId] = useState<string | number | null>(null)
+  const [sentTown, setSentTown] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const head = useRef<HTMLHeadingElement>(null)
@@ -59,17 +62,43 @@ export default function Report() {
 
   // Ask for the location quietly as soon as the page opens; most people never see a location step.
   // Some phones only prompt after a tap, so "Use my location" calls this again from the button.
+  // Precise GPS: watch fresh fixes (no cached positions) and keep the most accurate one.
+  // Stops at 15 m or better, 25 s after the first fix, on send, or when the pin is adjusted by hand.
+  const watch = useRef<{ id: number; timer?: number } | null>(null)
+  const stopWatch = () => {
+    if (!watch.current) return
+    navigator.geolocation.clearWatch(watch.current.id)
+    clearTimeout(watch.current.timer)
+    watch.current = null
+  }
   const locate = () => {
     if (!navigator.geolocation) { setGps({ state: 'failed', denied: false }); return }
+    stopWatch()
     setGps({ state: 'finding' })
-    navigator.geolocation.getCurrentPosition(async pos => {
+    let best = Infinity, regionAsked = false
+    const id = navigator.geolocation.watchPosition(pos => {
       const { latitude: lat, longitude: lng, accuracy } = pos.coords
-      let region: string | null = null
-      try { const r = await fetch(`/api/regions/locate?lat=${lat}&lng=${lng}`); if (r.ok) region = (await r.json()).name ?? null } catch { /* name is optional */ }
-      setManual(null); setGps({ state: 'ok', lat, lng, accuracy, region }); setWhere('chip')
-    }, err => setGps({ state: 'failed', denied: err.code === err.PERMISSION_DENIED }), { enableHighAccuracy: true, timeout: 15000, maximumAge: 60000 })
+      if (!watch.current) return
+      if (watch.current.timer === undefined) watch.current.timer = window.setTimeout(stopWatch, 25000)
+      if (accuracy >= best) return
+      best = accuracy
+      setManual(null); setWhere(w => (w === 'ask' ? 'chip' : w))
+      setGps(g => ({ state: 'ok', lat, lng, accuracy, region: g.state === 'ok' ? g.region : null }))
+      if (!regionAsked) {
+        regionAsked = true
+        fetch(`/api/regions/locate?lat=${lat}&lng=${lng}`).then(r => (r.ok ? r.json() : null)).then(j => {
+          if (j?.name) setGps(g => (g.state === 'ok' ? { ...g, region: j.name } : g))
+        }, () => { /* the region name is optional */ })
+      }
+      if (accuracy <= 15) stopWatch()
+    }, err => {
+      // A watch can error after good fixes (e.g. timeout); keep what we have.
+      setGps(g => (g.state === 'ok' ? g : { state: 'failed', denied: err.code === err.PERMISSION_DENIED }))
+      stopWatch()
+    }, { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 })
+    watch.current = { id }
   }
-  useEffect(locate, [])
+  useEffect(() => { locate(); return stopWatch }, [])
   useEffect(() => { head.current?.focus() }, [screen])
 
   // Postal code (6 digits) is looked up to coordinates; anything else is sent as a typed address.
@@ -103,7 +132,7 @@ export default function Report() {
 
   const send = async () => {
     if (!category || !place) return
-    setBusy(true); setError(null)
+    setBusy(true); setError(null); stopWatch()
     const draft: Draft = { place, photo, category, note }
     const body = {
       ...('lat' in place
@@ -114,7 +143,8 @@ export default function Report() {
     try {
       const r = await fetch('/api/reports', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
       if (r.ok) {
-        setSentId((await r.json()).id); save(null); setUnsent(null); go('done')
+        const out = await r.json()
+        setSentId(out.id); setSentTown(out.town ?? null); save(null); setUnsent(null); go('done')
       } else if (r.status === 503 && r.headers.get('x-silversteps') === 'backup') {
         save(draft); setError("Reports can't be sent right now. Please try again later. Your report is saved on this phone.")
       } else if (r.status === 413) {
@@ -141,7 +171,11 @@ export default function Report() {
   }
 
   const chipText = manual ? (manual.hint ? (found === manual.hint ? `Found: ${manual.hint}` : manual.hint) : 'Pinned on the map')
-    : gps.state === 'ok' ? (gps.region ? `Near ${gps.region}` : 'Near you') : null
+    : gps.state === 'ok' ? `${gps.region ? `Near ${gps.region}` : 'Near you'} · within ${Math.round(gps.accuracy)} m` : null
+  // The point shown on the mini map: a hand-placed pin or postal code first, else the best GPS fix.
+  const shown = manual && 'lat' in manual ? { lng: manual.lng, lat: manual.lat, accuracy: manual.accuracy ?? 0 }
+    : !manual && gps.state === 'ok' ? { lng: gps.lng, lat: gps.lat, accuracy: gps.accuracy } : null
+  const refining = !manual && gps.state === 'ok' && gps.accuracy > 30
   // The "Where is it?" card shows until we have a place: GPS still pending, failed, or the user tapped Change.
   const showAsk = where === 'ask' || (where === 'chip' && !place)
 
@@ -182,8 +216,8 @@ export default function Report() {
 
           {where === 'map' ? (
             <Suspense fallback={<p className="r-muted">Loading the map</p>}>
-              <PickMap start={gps.state === 'ok' ? [gps.lng, gps.lat] : null}
-                onPick={([lng, lat]) => { setManual({ lat, lng }); setWhere('chip') }} onCancel={() => setWhere('chip')} />
+              <PickMap start={shown ? [shown.lng, shown.lat] : null}
+                onPick={([lng, lat]) => { stopWatch(); setManual({ lat, lng }); setWhere('chip') }} onCancel={() => setWhere('chip')} />
             </Suspense>
           ) : showAsk ? (
             <div className="r-card">
@@ -208,10 +242,19 @@ export default function Report() {
               <button type="button" className="r-link r-small" onClick={() => setWhere('map')}>Pick on a map</button>
             </div>
           ) : (
-            <div className="r-top">
-              {photo && <img src={photo} alt="Your photo" className="r-thumb" />}
-              <p className="r-chip"><MapPinIcon aria-hidden size={22} /><span>{chipText}</span></p>
-              <button type="button" className="r-link r-small" onClick={() => setWhere('ask')}>Change</button>
+            <div className="r-stack r-where">
+              {shown && (
+                <Suspense fallback={<div className="r-mini" />}>
+                  <MiniMap lng={shown.lng} lat={shown.lat} accuracy={shown.accuracy}
+                    onOpen={() => { stopWatch(); setWhere('map') }} />
+                </Suspense>
+              )}
+              <div className="r-top">
+                {photo && <img src={photo} alt="Your photo" className="r-thumb" />}
+                <p className="r-chip"><MapPinIcon aria-hidden size={22} /><span>{chipText}</span></p>
+                <button type="button" className="r-link r-small" onClick={() => setWhere('ask')}>Change</button>
+              </div>
+              {refining && <p className="r-muted r-refine" role="status"><span className="r-spin" aria-hidden />Getting a more exact spot…</p>}
             </div>
           )}
 
@@ -251,6 +294,7 @@ export default function Report() {
           <CheckCircleIcon aria-hidden size={88} className="r-ok" />
           <h1 id="h-done" ref={head} tabIndex={-1}>Thank you. Your report is on the planners' map.</h1>
           <button type="button" className="r-btn r-primary r-huge" onClick={restart}>Report another</button>
+          <a className="r-link r-center" href={sentTown ? `/#${sentTown}/reports` : '/#reports'}>See it on the map</a>
           {sentId != null && <p className="r-muted r-tiny">Report number {sentId}</p>}
         </section>
       )}

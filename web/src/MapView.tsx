@@ -9,7 +9,7 @@ setWorkerUrl(workerUrl)
 import type { FeatureCollection, Geometry } from 'geojson'
 import { circle, visibleMidpoint, type Gap, type LngLat, type Route } from './logic.ts'
 
-export type Layers = { footfall: boolean; barriers: boolean; blocks: boolean; destinations: boolean; routes: boolean; risk: boolean; icons: boolean }
+export type Layers = { footfall: boolean; barriers: boolean; blocks: boolean; destinations: boolean; routes: boolean; risk: boolean; icons: boolean; reports: boolean }
 export type BarrierIcon = { id: string; barrier: string; severity: number; planned: boolean; score: number; label: string; at: LngLat; lines: LngLat[][] | null }
 export type Family = 'food' | 'transport' | 'health' | 'active' | 'care' | 'shops'
 export const FAMILY_OF: Record<string, Family> = {
@@ -81,6 +81,10 @@ type Props = {
   rclusters: { id: string; at: LngLat; count: number }[]
   selCluster: string | null
   rdots: LngLat[]
+  /** resident report dots shown in the other views */
+  residentDots: LngLat[]
+  /** cluster to pulse once (a new report just arrived) */
+  pulseCluster: string | null
   selectedGap: string | null
   /** 25 m ring around a short selected gap */
   ring: LngLat | null
@@ -202,7 +206,7 @@ export default function MapView(p: Props) {
     const setup = () => {
       if (setUp) return
       setUp = true
-      for (const id of ['subzones', 'segments', 'gaps', 'blocks', 'dests', 'routes', 'draft', 'risk', 'troutes', 'route-hl', 'sel-ring', 'bicons', 'rclusters', 'rdots'])
+      for (const id of ['subzones', 'segments', 'gaps', 'blocks', 'dests', 'routes', 'draft', 'risk', 'troutes', 'route-hl', 'sel-ring', 'bicons', 'rclusters', 'rdots', 'resdots'])
         map.addSource(id, { type: 'geojson', data: EMPTY })
       map.addLayer({ id: 'subzones-fill', type: 'fill', source: 'subzones', paint: { 'fill-opacity': 0.5 } })
       map.addLayer({ id: 'subzones-line', type: 'line', source: 'subzones', paint: { 'line-width': 0.6, 'line-opacity': 0.5 } })
@@ -239,6 +243,7 @@ export default function MapView(p: Props) {
         'circle-opacity': 0.18, 'circle-stroke-width': 2,
       } })
       map.addLayer({ id: 'rclusters', type: 'symbol', source: 'rclusters', layout: { 'icon-allow-overlap': true, 'symbol-sort-key': ['-', 0, ['get', 'count']] } as never })
+      map.addLayer({ id: 'resdots', type: 'circle', source: 'resdots', paint: { 'circle-radius': 4.5, 'circle-stroke-width': 1.5 } })
       map.addLayer({ id: 'rdots', type: 'circle', source: 'rdots', paint: { 'circle-radius': 6, 'circle-stroke-width': 2 } })
       for (const sc of ['light', 'dark'] as const) {
         const c = MAP_COLORS[sc]
@@ -378,12 +383,25 @@ export default function MapView(p: Props) {
     map.setLayoutProperty('rclusters', 'icon-image', ['case', sel, `rc-${p.scheme}`, focus, `rc-g-${p.scheme}`, `rc-${p.scheme}`] as unknown as ExpressionSpecification)
     map.setPaintProperty('rclusters-ring', 'circle-color', ['case', sel, c.report, focus, c.muted, c.report] as unknown as ExpressionSpecification)
     map.setPaintProperty('rclusters-ring', 'circle-stroke-color', ['case', sel, c.report, focus, c.muted, c.report] as unknown as ExpressionSpecification)
+    map.setPaintProperty('resdots', 'circle-color', focus ? c.muted : c.report)
+    map.setPaintProperty('resdots', 'circle-stroke-color', c.ring)
     map.setPaintProperty('rdots', 'circle-color', c.report)
     map.setPaintProperty('rdots', 'circle-stroke-color', c.ring)
   }, [map, p.scheme, p.footBreaks, p.subzoneBreaks, p.town, focus, p.footP, p.hotIds, p.routesMode, p.reportsMode, p.selCluster])
   useEffect(() => {
     set('rclusters', { type: 'FeatureCollection', features: p.rclusters.map(r => ({ type: 'Feature', properties: { id: r.id, count: r.count }, geometry: { type: 'Point', coordinates: r.at } })) })
   }, [map, p.rclusters])
+  useEffect(() => {
+    set('resdots', { type: 'FeatureCollection', features: p.residentDots.map(at => ({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: at } })) })
+  }, [map, p.residentDots])
+  // One calm pulse on the cluster that just got a new report.
+  useEffect(() => {
+    if (!map || !p.pulseCluster || p.reducedMotion) return
+    const base = ['interpolate', ['linear'], ['sqrt', ['get', 'count']], 1, 14, 5, 30] as unknown as ExpressionSpecification
+    map.setPaintProperty('rclusters-ring', 'circle-radius', ['case', ['==', ['get', 'id'], p.pulseCluster], ['*', 1.6, base], base] as unknown as ExpressionSpecification)
+    const t = setTimeout(() => map.setPaintProperty('rclusters-ring', 'circle-radius', base), 500)
+    return () => clearTimeout(t)
+  }, [map, p.pulseCluster])
   useEffect(() => {
     set('rdots', { type: 'FeatureCollection', features: p.rdots.map(at => ({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: at } })) })
   }, [map, p.rdots])

@@ -65,3 +65,9 @@ textarea.r-input { resize: vertical; }
 .r-row .r-input { flex: 1; min-width: 0; }
 .r-find { width: auto; flex: none; padding: 12px 18px; }
 .r-postal { display: grid; gap: 8px; }
+.r-where { gap: 8px; }
+.r-mini-btn { display: block; width: 100%; padding: 0; border: 1px solid var(--border); border-radius: 14px; overflow: hidden; cursor: pointer; background: var(--surface-2); }
+.r-mini { height: 160px; width: 100%; pointer-events: none; }
+.r-refine { display: flex; align-items: center; gap: 8px; font-size: 1rem; }
+.r-spin { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--border); border-top-color: var(--accent); }
+@media (prefers-reduced-motion: no-preference) { .r-spin { animation: r-spin 1s linear infinite; } @keyframes r-spin { to { transform: rotate(360deg); } } }

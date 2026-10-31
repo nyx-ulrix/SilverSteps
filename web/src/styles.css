@@ -516,3 +516,16 @@ textarea { resize: vertical; }
 .chip-reported { display: inline-flex; align-items: center; gap: 4px; border-color: var(--accent); color: var(--text); font-weight: 600; }
 .only-toggle { display: flex; align-items: center; gap: 10px; min-height: 44px; font-size: 0.9rem; cursor: pointer; }
 .only-toggle input { width: 20px; height: 20px; accent-color: var(--accent); margin: 0; }
+
+/* ---------- live report toast ---------- */
+.toast {
+  position: absolute; z-index: 4; left: 50%; bottom: 24px; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 10px; max-width: min(520px, calc(100vw - 32px)); padding: 8px 8px 8px 14px;
+  background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
+  font-size: 0.92rem;
+}
+.toast svg { flex: none; color: var(--text-2); }
+.toast p { flex: 1; }
+.toast .btn { min-height: 40px; padding: 0 12px; }
+@media (min-width: 768px) { .toast { left: calc(432px + (100% - 432px) / 2); } }
+@media (max-width: 767px) { .toast { top: 64px; bottom: auto; } }

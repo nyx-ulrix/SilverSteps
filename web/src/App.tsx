@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import type React from 'react'
 import type { Map as MLMap } from 'maplibre-gl'
 import type { FeatureCollection, LineString } from 'geojson'
-import { ChatCircleTextIcon, InfoIcon, PathIcon, CaretUpIcon, CaretDownIcon, StackIcon, UsersIcon, WheelchairIcon, EyeIcon, FunnelIcon } from '@phosphor-icons/react'
+import { ChatCircleTextIcon, XIcon, InfoIcon, PathIcon, CaretUpIcon, CaretDownIcon, StackIcon, UsersIcon, WheelchairIcon, EyeIcon, FunnelIcon } from '@phosphor-icons/react'
 import MapView, { riskLetter, type BarrierIcon, FAMILY_LABEL, FAMILY_OF, MAP_COLORS, type Family, type FlyTarget, type Layers, type Scheme } from './MapView.tsx'
 import { api, ApiError, getJSON } from './api.ts'
 import { BarrierBadge } from './Badge.tsx'
@@ -63,7 +63,7 @@ export default function App() {
   const [subzones, setSubzones] = useState<FeatureCollection | null>(null)
   const [topGaps, setTopGaps] = useState<Gap[]>([])
 
-  const [slug, setSlug] = useState<string | null>(() => HASH[0] || null)
+  const [slug, setSlug] = useState<string | null>(() => (HASH[0] && !MODES.includes(HASH[0] as ListMode) ? HASH[0] : null))
   const [town, setTown] = useState<TownData | null>(null)
   const [townErr, setTownErr] = useState(false)
   const [townTry, setTownTry] = useState(0)
@@ -86,7 +86,17 @@ export default function App() {
   // Every resident report in the region (all time), for counting reports per fix.
   const [allReports, setAllReports] = useState<ReportRow[]>([])
   const pendingReportIds = useRef<(number | string)[] | null>(null)
-  const [listMode, setListMode] = useState<ListMode>(() => (MODES.includes(HASH[1] as ListMode) ? HASH[1] as ListMode : 'hot'))
+  // Live: every resident report in the region, polled every 10 s while the tab is visible.
+  const seenReports = useRef<Set<string> | null>(null)
+  type Recent = ReportRow & { region?: string | null }
+  const [toast, setToast] = useState<Recent | null>(null)
+  // Newest reports from every region (and none), polled every 5 s: the national dots and the toast.
+  const [recent, setRecent] = useState<Recent[]>([])
+  const recentOk = useRef(true)
+  const [tick, setTick] = useState(0) // bumps when new reports arrive, to refresh the region's lists at once
+  const [flashAt, setFlashAt] = useState<LngLat | null>(null)
+  const [pulse, setPulse] = useState<{ id: number | string; n: number } | null>(null)
+  const [listMode, setListMode] = useState<ListMode>(() => (MODES.includes(HASH[1] as ListMode) ? HASH[1] as ListMode : MODES.includes(HASH[0] as ListMode) ? HASH[0] as ListMode : 'hot'))
   // Block-to-place routes: loaded only when the Routes view opens (about 2 MB per town).
   const [townRoutes, setTownRoutes] = useState<BlockRoute[] | null | 'error'>(null)
   const [routeSort, setRouteSort] = useState<RouteSort>('likely')
@@ -107,7 +117,7 @@ export default function App() {
   const [dest, setDest] = useState('')
   const [savingRoute, setSavingRoute] = useState(false)
   const [routeMsg, setRouteMsg] = useState<string | null>(null)
-  const [layers, setLayers] = useState<Layers>({ footfall: true, barriers: false, blocks: false, destinations: false, routes: false, risk: true, icons: true })
+  const [layers, setLayers] = useState<Layers>({ footfall: true, barriers: false, blocks: false, destinations: false, routes: false, risk: true, icons: true, reports: true })
   const [sheetOpen, setSheetOpen] = useState(() => !(matchMedia('(max-width: 767px)').matches && location.hash.length > 1))
   const [fly, setFly] = useState<FlyTarget | null>(null)
   const mapRef = useRef<MLMap | null>(null)
@@ -140,7 +150,9 @@ export default function App() {
   }, [indexTry])
 
   const summary = index?.towns.find(t => t.slug === slug) ?? null
-  const firstFrame = useRef(!!HASH[0])
+  const summaryRef2 = useRef(summary)
+  summaryRef2.current = summary
+  const firstFrame = useRef(!!HASH[0] && !MODES.includes(HASH[0] as ListMode))
   // Opened with #town in the URL: frame that town once the index arrives.
   useEffect(() => { if (summary && !fly) setFly({ bbox: summary.bbox, n: 0 }) }, [index])
 
@@ -176,11 +188,6 @@ export default function App() {
     apiUp().then(err => {
       if (err || !live) return
       api.feedback(slug).then(d => live && setFeedback(d), noteApiFailure)
-      getJSON<ReportRow[]>(`/api/reports?town=${encodeURIComponent(slug)}`).then(d => {
-        if (!live) return
-        setAllReports(d)
-        if (d.length && !sortTouched.current) setSortRaw('reported') // lead with what residents said
-      }, () => {})
       api.routes(slug).then(d => live && setRoutes(d), noteApiFailure)
     })
     return () => { live = false }
@@ -280,7 +287,6 @@ export default function App() {
   const mapRoutes = useMemo(() => (slug && listMode === 'routes'
     ? filteredRoutes.slice(0, 150).map(r => ({ id: String(r.id), coords: r.coords, family: FAMILY_OF[r.type] ?? 'shops' as Family, trips: r.trips }))
     : NONE), [slug, listMode, filteredRoutes])
-  const aiPending = Array.isArray(clusters) && clusters.some(c => c.ai_pending)
   useEffect(() => {
     if (listMode !== 'reports' || !slug) return
     let live = true
@@ -290,14 +296,21 @@ export default function App() {
       getJSON<ReportRow[]>(`/api/reports?town=${encodeURIComponent(slug)}${since}`).then(r => live && setReportRows(r), () => {})
     }
     pull()
-    // Every 60 s; every 10 s while Claude is still summarising a cluster.
-    const t = setInterval(pull, aiPending ? 10000 : 60000)
+    // Every 10 s while the tab is visible.
+    const t = setInterval(() => { if (document.visibilityState === 'visible') pull() }, 10000)
     return () => { live = false; clearInterval(t) }
-  }, [listMode, slug, range, aiPending])
+  }, [listMode, slug, range, tick])
   const shownClusters = useMemo(() => (Array.isArray(clusters) ? clusters : NONE as Cluster[])
     .filter(c => Object.keys(c.categories).some(k => cats.has(k as Category) && (who === 'all' || (CAT[k as Category]?.profiles ?? ['mobility', 'sight']).includes(who))))
     .sort((a, b) => clusterScore(b) - clusterScore(a)), [clusters, cats, who])
   const mapClusters = useMemo(() => (slug && listMode === 'reports' ? shownClusters.map(c => ({ id: c.id, at: [c.lng, c.lat] as LngLat, count: c.count })) : NONE), [slug, listMode, shownClusters])
+  const reportDots = useMemo(() => {
+    const seen = new Set<string>(), out: LngLat[] = []
+    for (const r of [...recent, ...allReports]) if (r.lat != null && r.lng != null && !seen.has(String(r.id))) { seen.add(String(r.id)); out.push([r.lng, r.lat]) }
+    return out
+  }, [recent, allReports])
+  // The cluster that holds the newest report, pulsed once when it arrives (Reports view).
+  const pulseClusterId = useMemo(() => (pulse && Array.isArray(clusters) ? clusters.find(c => c.report_ids.some(id => String(id) === String(pulse.id)))?.id ?? null : null), [pulse, clusters])
   const risks = useMemo(() => riskAreas(slug ? visibleGaps : rankedTop), [slug, visibleGaps, rankedTop])
   const townNames = useMemo(() => Object.fromEntries((index?.towns ?? []).map(t => [t.slug, t.name])), [index])
 
@@ -349,6 +362,71 @@ export default function App() {
     const pts = reportRows.filter(r => c.report_ids.includes(r.id)).map(r => [r.lng, r.lat] as LngLat)
     select({ kind: 'cluster', id: c.id }, pts.length > 1 ? pts : [[c.lng, c.lat]])
   }
+  useEffect(() => {
+    seenReports.current = null
+    if (!slug) return
+    let live = true
+    const pull = () => apiUp().then(err => {
+      if (err || !live) return
+      getJSON<ReportRow[]>(`/api/reports?town=${encodeURIComponent(slug)}`).then(d => {
+        if (!live) return
+        const prev = seenReports.current
+        seenReports.current = new Set(d.map(r => String(r.id)))
+        if (prev) {
+          const fresh = d.filter(r => !prev.has(String(r.id)))
+          if (fresh.length) {
+            setPulse({ id: fresh[fresh.length - 1].id, n: Date.now() })
+            if (!recentOk.current) setToast({ ...fresh[fresh.length - 1], region: summaryRef2.current?.name ?? null })
+          }
+        } else if (d.length && !sortTouched.current) setSortRaw('reported') // lead with what residents said
+        setAllReports(d)
+      }, () => {})
+    })
+    pull()
+    const t = setInterval(() => { if (document.visibilityState === 'visible') pull() }, 10000)
+    const onVis = () => { if (document.visibilityState === 'visible') pull() }
+    document.addEventListener('visibilitychange', onVis)
+    return () => { live = false; clearInterval(t); document.removeEventListener('visibilitychange', onVis) }
+  }, [slug, tick])
+
+  // Global feed: /api/reports/recent?after=<max id>, every 5 s while visible, in every view.
+  useEffect(() => {
+    let live = true, maxId: number | null = null
+    const pull = () => apiUp().then(async err => {
+      if (err || !live || !recentOk.current) return
+      const r = await fetch(`/api/reports/recent?limit=50${maxId != null ? `&after=${maxId}` : ''}`).catch(() => null)
+      if (!live || !r) return
+      if (r.status === 404) { recentOk.current = false; return } // older server: the region poll does the toasts
+      if (!r.ok) return
+      const rows: Recent[] = await r.json().catch(() => [])
+      if (!live || !rows.length) { if (maxId == null) maxId = 0; return }
+      const first = maxId == null
+      maxId = Math.max(maxId ?? 0, ...rows.map(x => Number(x.id) || 0))
+      setRecent(prev => {
+        const seen = new Set(prev.map(x => String(x.id)))
+        return [...rows.filter(x => !seen.has(String(x.id))), ...prev].slice(0, 200)
+      })
+      if (!first) {
+        const newest = rows.reduce((a, b) => (Number(b.id) > Number(a.id) ? b : a))
+        setToast(newest); setPulse({ id: newest.id, n: Date.now() }); setTick(n => n + 1)
+      }
+    })
+    pull()
+    const t = setInterval(() => { if (document.visibilityState === 'visible') pull() }, 5000)
+    const onVis = () => { if (document.visibilityState === 'visible') pull() }
+    document.addEventListener('visibilitychange', onVis)
+    return () => { live = false; clearInterval(t); document.removeEventListener('visibilitychange', onVis) }
+  }, [])
+  // "Show" on the toast: open the report's region in Reports and fly to it; unmapped spots just fly.
+  const showReport = (r: Recent) => {
+    setToast(null)
+    const at: LngLat | null = r.lat != null && r.lng != null ? [r.lng, r.lat] : null
+    if (r.town && r.town !== slug && index?.towns.some(t => t.slug === r.town)) { setSel(null); setSlug(r.town); firstFrame.current = false }
+    if (r.town) openReportsFor([r.id])
+    if (at) { setFlashAt(at); setFly({ center: at, zoom: 17, n: Date.now() }) }
+  }
+  useEffect(() => { if (!flashAt) return; const t = setTimeout(() => setFlashAt(null), 8000); return () => clearTimeout(t) }, [flashAt])
+  useEffect(() => { if (!toast) return; const t = setTimeout(() => setToast(null), 15000); return () => clearTimeout(t) }, [toast])
   const openReportsFor = (ids: (number | string)[]) => {
     pendingReportIds.current = ids
     setSel(null); setListMode('reports')
@@ -654,9 +732,11 @@ export default function App() {
         routesMode={!!slug && view === 'main' && listMode === 'routes'}
         troutes={mapRoutes}
         routeHl={routeHl}
+        residentDots={layers.reports ? reportDots : NONE}
+        pulseCluster={pulseClusterId}
         reportsMode={!!slug && view === 'main' && listMode === 'reports'} rclusters={mapClusters} selCluster={selCluster?.id ?? null} rdots={rdots}
         onCluster={id => { const c = shownClusters.find(x => x.id === id); if (c) pickCluster(c) }}
-        context={selContext} bicons={bicons} selectedGap={selGap?.id ?? null} ring={selGap && selGap.len < 40 ? selGap.at : null}
+        context={selContext} bicons={bicons} selectedGap={selGap?.id ?? null} ring={selGap && selGap.len < 40 ? selGap.at : flashAt}
         onRisk={pickRisk} onRoute={id => { const r = routeList.find(x => String(x.id) === id); if (r) pickRoute(r) }}
         onBlock={b => { setBlk(b); if (mobile) setSheetOpen(true) }}
         blocks={blocks} destinations={dests} destLabels={Object.fromEntries(Object.entries(index?.destTypes ?? {}).map(([k, d]) => [k, d.label]))}
@@ -666,6 +746,14 @@ export default function App() {
       />
       {view === 'draw' && <div className="crosshair" aria-hidden />}
       {panHint && <p className="pan-hint">Right-drag to move the map</p>}
+      {toast && (
+        <div className="toast" role="status">
+          <ChatCircleTextIcon aria-hidden size={22} />
+          <p>New report: {CAT[toast.category]?.label ?? 'Something else'} near {toast.region ?? (toast.town ? townNames[toast.town] : null) ?? 'an unmapped spot'}</p>
+          <button type="button" className="btn btn-secondary" onClick={() => showReport(toast)}>Show</button>
+          <button type="button" className="btn-icon close" aria-label="Dismiss" onClick={() => setToast(null)}><XIcon aria-hidden size={18} /></button>
+        </div>
+      )}
 
       <aside className={`panel${sheetOpen ? ' open' : ''}`} aria-label="SilverSteps">
         <header className="panel-head">
@@ -729,6 +817,7 @@ function MapKey({ layers, setLayers, scheme, town, footBreaks, subzoneBreaks, ro
               {toggle('footfall', 'Senior footfall', { background: `linear-gradient(90deg, ${c.ramp.join(',')})` })}
               {layers.footfall && footBreaks.length > 0 && ramp('Estimated senior trips per week (modelled)', footBreaks)}
               {toggle('risk', 'High risk areas', { background: `${c.risk}33`, border: `2px dashed ${c.risk}`, borderRadius: '50%' })}
+              {toggle('reports', 'Resident reports', { background: c.report, borderRadius: '50%', width: 12, height: 12, margin: '0 5px' })}
               {toggle('icons', 'Barrier icons', { background: 'var(--sev3-bg)', border: '2px solid var(--sev3-fg)', borderRadius: '50%' })}
               {layers.icons && labels && present.length > 0 && (
                 <ul className="icon-legend">
