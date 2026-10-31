@@ -37,7 +37,12 @@ WORKERS = 3          # parallel towns; Overpass only gives a couple of slots per
 SENIOR_AGE = 65
 CUTOFF_M = 800       # max senior-weighted walking cost per trip
 DECAY_M = 300        # distance decay: weight = exp(-cost / DECAY_M)
-BENCH_GAP_M = 100    # no seat within 100 m of a segment midpoint = in a >200 m rest gap
+# BCA Code on Accessibility 2025 cl. 4.2.4.3: resting areas at most 50 m apart along accessible routes.
+BENCH_GAP_M = 25     # no seat within 25 m of a segment midpoint = in a >50 m rest gap
+BENCH_FAR_M = 100    # no seat within 100 m = over 200 m without one, rated more severe
+TRANSIT_SHELTER_M = 150  # flag missing shelter on any path this close to a bus stop or MRT (Green Mark HW1.1a)
+# BCA Code 2025 Table 5 (p47): longest ramp run allowed for a gradient (as a fraction), in metres.
+MAX_RUN = [(1 / 12, 6), (1 / 14, 9), (1 / 16, 12), (1 / 20, 15), (1 / 24, 18)]
 
 # Trips per senior per week, by destination type. Assumptions, shown in the app.
 DEST_TYPES = {
@@ -68,21 +73,42 @@ BARRIERS = {
     "crossing": ("Crossing without signals", 2, "Signalised or zebra crossing", "medium"),
     "kerb": ("Raised kerb", 2, "Kerb ramp", "low"),
     "no_shelter": ("No shelter", 1, "Covered linkway", "high"),
-    "rest_gap": ("No seat for over 200 m", 1, "Seat with backrest and armrests (rest point)", "low"),
+    "rest_gap": ("No seat within 50 m", 1, "Seat with backrest and armrests (rest point)", "low"),
+    "long_rest_gap": ("No seat for over 200 m", 2, "Seat with backrest and armrests (rest point)", "low"),
     "surface": ("Rough surface", 1, "Resurface with non-slip finish", "medium"),
     "dark": ("Unlit at night", 1, "Non-glare path lighting", "medium"),
-    "slope": ("Slope", 1, "Handrail or regrade", "medium"),
+    "slope": ("Slope too long without a landing", 2, "Rest landings and handrails", "medium"),
+    "steep": ("Steeper than a 1:12 ramp", 3, "Regrade to 1:12 or add a lift", "high"),
     "obstruction": ("Path partly blocked", 2, "Clear or move obstruction", "low"),
-    "no_tactile": ("Crossing without tactile paving", 2, "Tactile paving", "low"),
+    "no_tactile": ("No warning tactile paving", 2, "Warning tactile paving", "low"),
+    "no_handrail": ("Steps without handrail", 3, "Handrails on both sides", "low"),
     "silent_signal": ("Traffic light without audio signal", 2, "Audible crossing signal", "medium"),
+}
+# The rule each barrier is checked against. Crossings and signals are LTA's (BCA Code 2025 cl. 2.4.1 defers street works).
+RULES = {
+    "steps": "BCA Code on Accessibility 2025: accessible routes exclude steps (definitions, p10)",
+    "crossing": "LTA guidelines (BCA Code 2025 cl. 2.4.1 defers street works to LTA)",
+    "kerb": "BCA Code 2025 cl. 3.1.5, 4.5.3: flush or kerb ramp at most 1:10",
+    "no_shelter": "BCA Code 2025 cl. 4.2.5.1, 7.1.1(a); Green Mark HW1.1a sheltered routes to transport",
+    "rest_gap": "BCA Code 2025 cl. 4.2.4.3: resting areas at most 50 m apart",
+    "long_rest_gap": "BCA Code 2025 cl. 4.2.4.3: resting areas at most 50 m apart",
+    "surface": "BCA Code 2025 cl. 4.1.1: stable, firm, level and slip-resistant",
+    "dark": "BCA Code 2025 cl. 9.1: uniform, glare-free lighting (no lux figure given)",
+    "slope": "BCA Code 2025 Tables 4 and 5: max 1:12, with landings by run length",
+    "steep": "BCA Code 2025 Table 4: max 1:12 for rises over 175 mm",
+    "obstruction": "BCA Code 2025 cl. 4.2.3: clear width free of obstacles",
+    "no_tactile": "BCA Code 2025 cl. 4.5.3.3 (kerb ramps at crossings), 4.7.4.1 (steps)",
+    "no_handrail": "BCA Code 2025 cl. 4.7.3.1: continuous handrails 800-1000 mm high",
+    "silent_signal": "LTA guidelines (not covered by the BCA Code)",
 }
 # Who each barrier affects most: "mobility" (walking frame, wheelchair, frailty) and/or "sight" (low vision, blind).
 PROFILES = {"steps": ["mobility", "sight"], "crossing": ["mobility", "sight"], "kerb": ["mobility"],
-            "no_shelter": ["mobility"], "rest_gap": ["mobility"], "surface": ["mobility", "sight"],
-            "dark": ["sight"], "slope": ["mobility"], "obstruction": ["mobility", "sight"],
-            "no_tactile": ["sight"], "silent_signal": ["sight"]}
+            "no_shelter": ["mobility"], "rest_gap": ["mobility"], "long_rest_gap": ["mobility"],
+            "surface": ["mobility", "sight"], "dark": ["sight"], "slope": ["mobility"], "steep": ["mobility"],
+            "obstruction": ["mobility", "sight"], "no_tactile": ["sight"], "no_handrail": ["mobility", "sight"],
+            "silent_signal": ["sight"]}
 # Likely owner of each fix. Our inference: the HDB Town Design Guides only credit LTA for crossing works (AMK p30).
-OWNERS = {"crossing": "LTA", "silent_signal": "LTA", "no_tactile": "LTA", "kerb": "LTA or Town Council"}
+OWNERS = {"crossing": "LTA", "silent_signal": "LTA", "no_tactile": "LTA or Town Council", "kerb": "LTA or Town Council"}
 DEFAULT_OWNER = "Town Council or HDB"
 
 
@@ -96,8 +122,31 @@ PLANNED = json.loads((Path(__file__).resolve().parent / "raw" / "planned_works.j
 VISION_MIN_CONF = 0.6  # street-image findings below this stay "needs a field check"
 # Attributes OSM usually does not record: shown as "needs field check", never as barriers.
 UNKNOWN = {"shelter": "Shelter not recorded", "lit": "Lighting not recorded",
-           "tactile": "Tactile paving not recorded at this crossing",
-           "sound": "Audio signal not recorded at this traffic light"}
+           "tactile": "Warning tactile paving not recorded",
+           "sound": "Audio signal not recorded at this traffic light",
+           "slope": "Slope recorded but not measured"}
+
+
+def gradient(v):
+    """OSM incline value as a fraction (0.08 for "8%" or "1:12.5"); None when it isn't a number."""
+    v = str(v or "").strip().lstrip("-").replace(" ", "")
+    if m := re.fullmatch(r"(\d+(?:\.\d+)?)%", v):
+        return float(m[1]) / 100
+    if m := re.fullmatch(r"1:(\d+(?:\.\d+)?)", v):
+        return 1 / float(m[1]) if float(m[1]) else None
+    return None
+
+
+def slope_barrier(g, length):
+    """BCA Code 2025 Tables 4 and 5: steeper than 1:12 never complies; gentler slopes need a landing
+    within the maximum run for their gradient. 1:25 (4%) or gentler needs nothing."""
+    if g is None or g <= 0.04:
+        return None
+    if g > 1 / 12:
+        return "steep"
+    # Use the gentlest table row that is still at least as steep as g (e.g. 7% falls under 1:14, 9 m).
+    max_run = next(run for steep, run in reversed(MAX_RUN) if g <= steep)
+    return "slope" if length > max_run else None
 
 S = requests.Session()
 S.headers["User-Agent"] = "SilverSteps hackathon (github.com/nyx-ulrix/SilverSteps)"
@@ -157,6 +206,25 @@ def num(v):
 
 def r6(c):
     return [round(c[0], 6), round(c[1], 6)]
+
+
+def r5(c):  # ~1 m: plenty for drawing paths, ~15% smaller files
+    return [round(c[0], 5), round(c[1], 5)]
+
+
+def polyline(coords):
+    """Google encoded polyline (precision 1e5) of [lng, lat] points: routes become 3-4x smaller than JSON arrays."""
+    out, prev = [], (0, 0)
+    for lng, lat in coords:
+        cur = (round(lat * 1e5), round(lng * 1e5))
+        for d in (cur[0] - prev[0], cur[1] - prev[1]):
+            v = ~(d << 1) if d < 0 else d << 1
+            while v >= 0x20:
+                out.append(chr((0x20 | (v & 0x1f)) + 63))
+                v >>= 5
+            out.append(chr(v + 63))
+        prev = cur
+    return "".join(out)
 
 
 def to_m(geom):
@@ -347,7 +415,7 @@ def build_town(town, nat):
             barriers.append("steps")
         if is_crossing and not signals and crossing not in ("zebra", "marked"):
             barriers.append("crossing")
-        if is_crossing:  # checks for people with low vision or blindness
+        if is_crossing or hw == "steps":  # warning tactile paving, for people with low vision or blindness
             tactile = tag("tactile_paving")
             if tactile == "no":
                 barriers.append("no_tactile")
@@ -370,8 +438,13 @@ def build_town(town, nat):
             barriers.append("dark")
         elif lit is None:
             unknown.append("lit")
-        if first(d.get("incline")) not in (None, "no", "0", "0%"):
-            barriers.append("slope")
+        incline = first(d.get("incline"))
+        if incline not in (None, "no", "0", "0%"):
+            sb = slope_barrier(gradient(incline), d["length"])
+            if sb:
+                barriers.append(sb)
+            elif gradient(incline) is None:  # "up", "yes": sloped, but by how much isn't recorded
+                unknown.append("slope")
         if first(d.get("covered")) == "no":
             barriers.append("no_shelter")
         elif not covered:
@@ -471,7 +544,7 @@ def build_town(town, nat):
                      "name": first(d.get("name")) if isinstance(first(d.get("name")), str) else None,
                      "hw": d["hw"], "xing": d["xing"], "len": round(d["length"]), "foot": round(d["foot"]),
                      "barriers": list(d["barriers"]), "unknown": d["unknown"], "covered": d["covered"],
-                     "coords": [r6(c) for c in coords], "_mid": mid})
+                     "coords": [r5(c) for c in coords], "_mid": mid})
     if not segs:
         return None
     if len(bench_m):
@@ -480,8 +553,17 @@ def build_town(town, nat):
     else:
         dists = [1e9] * len(segs)
     for s, dist in zip(segs, dists):
-        if dist > BENCH_GAP_M:
+        if dist > BENCH_FAR_M:
+            s["barriers"].append("long_rest_gap")
+        elif dist > BENCH_GAP_M:
             s["barriers"].append("rest_gap")
+    # Paths right by a bus stop or MRT get shelter checked whatever their footfall (Green Mark HW1.1a).
+    transit = gpd.GeoSeries([Point(d["ll"]) for d in dests if d["type"] in ("bus", "mrt")], crs=4326).to_crs(3414)
+    if len(transit):
+        _, tdists = transit.sindex.nearest(gpd.GeoSeries([s["_mid"] for s in segs], crs=4326).to_crs(3414),
+                                           return_distance=True, return_all=False)
+        for s, td in zip(segs, tdists):
+            s["near_transit"] = bool(td <= TRANSIT_SHELTER_M)
 
     # Fold in confident street-image findings (pipeline/vision.py) on the busiest paths.
     vis_p = CACHE / "vision" / f"{slug}.json"
@@ -515,9 +597,13 @@ def build_town(town, nat):
             add("surface")
         if sure("obstruction", "yes"):
             add("obstruction")
-        if s["xing"] and sure("tactile_paving", "no"):
+        if (s["xing"] or s["hw"] == "steps") and sure("tactile_paving", "no"):
             s["unknown"] = [u for u in s["unknown"] if u != "tactile"]
             add("no_tactile")
+        if s["hw"] == "steps" and sure("handrail", "no"):
+            add("no_handrail")
+        if sure("bench", "yes"):
+            s["barriers"] = [b for b in s["barriers"] if b not in ("rest_gap", "long_rest_gap")]
     feet = sorted(s["foot"] for s in segs)
     p50, p75 = feet[len(feet) // 2], feet[len(feet) * 3 // 4]
 
@@ -527,7 +613,8 @@ def build_town(town, nat):
         for bt in s["barriers"]:
             # Comfort gaps only on the busiest quarter: OSM records few benches or shelters in SG,
             # so flagging them everywhere would mostly measure missing map data.
-            if bt in ("no_shelter", "rest_gap") and s["foot"] < p75:
+            if bt in ("no_shelter", "rest_gap", "long_rest_gap") and s["foot"] < p75 \
+                    and not (bt == "no_shelter" and s.get("near_transit")):
                 continue
             flagged[bt].append(s)
     gaps = defaultdict(lambda: {"segs": [], "foot": 0, "len": 0, "name": None})
@@ -586,7 +673,7 @@ def build_town(town, nat):
     out.mkdir(exist_ok=True)
     dump = lambda name, obj: (out / name).write_text(json.dumps(obj, separators=(",", ":")))
     dump("segments.json", fc([{"type": "Feature", "id": i,
-                               "properties": {**{k: v for k, v in s.items() if k not in ("coords", "_mid", "u", "v", "vsrc")},
+                               "properties": {**{k: v for k, v in s.items() if k not in ("coords", "_mid", "u", "v", "vsrc", "near_transit")},
                                               "vision": s["id"] in vis},
                                "geometry": {"type": "LineString", "coordinates": s["coords"]}}
                               for i, s in enumerate(segs)]))
@@ -620,7 +707,7 @@ def build_town(town, nat):
                           "dest": r["d"]["name"], "len": round(sum(G.edges[e]["length"] for e in eks)),
                           "trips": round(r["trips"], 1), "share": round(r["share"], 2),
                           "barriers": sorted({bt for e in eks for bt in G.edges[e]["barriers"]}),
-                          "coords": path_coords(r["p"])})
+                          "path": polyline(path_coords(r["p"]))})
     dump("routes.json", route_out)
 
     inside = [b for b in blocks if area.contains(Point(b["ll"]))]
@@ -733,8 +820,8 @@ def write_index(nat):
         "params": {"cutoffM": CUTOFF_M, "decayM": DECAY_M, "stepsFactor": STEPS_FACTOR, "shelterFactor": SHELTER_FACTOR,
                    "unsignalisedCrossingM": UNSIGNALISED_CROSSING_M, "benchGapM": BENCH_GAP_M * 2},
         "destTypes": {k: {"label": v[0], "perWeek": v[1]} for k, v in DEST_TYPES.items()},
-        "barriers": {k: {"label": v[0], "severity": v[1], "fix": v[2], "effort": v[3], "profiles": PROFILES[k]}
-                     for k, v in BARRIERS.items()},
+        "barriers": {k: {"label": v[0], "severity": v[1], "fix": v[2], "effort": v[3], "profiles": PROFILES[k],
+                         "rule": RULES[k]} for k, v in BARRIERS.items()},
         "profiles": {"mobility": "Walking frame or wheelchair", "sight": "Low vision or blind"},
         "unknown": UNKNOWN,
         "totals": {"seniors": int(sum(nat["seniors_sz"].values())),

@@ -59,3 +59,9 @@ console.log('logic ok')
   assert.equal(visibleMidpoint([[[103.80, 1.37], [103.81, 1.37]]], [104, 1.36, 104.1, 1.38]), null)
   console.log('midpoint ok')
 }
+// Google's reference polyline
+{
+  const { decodePolyline } = await import('./logic.ts')
+  assert.deepEqual(decodePolyline('_p~iF~ps|U_ulLnnqC_mqNvxq`@'), [[-120.2, 38.5], [-120.95, 40.7], [-126.453, 43.252]])
+  console.log('polyline ok')
+}

@@ -3,7 +3,7 @@
 export type LngLat = [number, number]
 export type Effort = 'low' | 'medium' | 'high'
 export type Profile = 'mobility' | 'sight'
-export type BarrierDef = { label: string; severity: number; fix: string; effort: Effort; profiles?: Profile[] }
+export type BarrierDef = { label: string; severity: number; fix: string; effort: Effort; profiles?: Profile[]; rule?: string }
 
 export type TownSummary = {
   slug: string; name: string; seniors: number; residents: number; blocks: number; weeklyTrips: number
@@ -42,7 +42,7 @@ export type Gap = {
 type Check = { value: 'yes' | 'no' | 'unknown'; confidence: number }
 export type VisionEntry = {
   status: 'ok' | 'no_imagery' | 'refused' | 'error'; pano?: string; date?: string; heading?: number; model?: string
-  checklist?: { tactile_paving?: Check; ped_signal?: Check; shelter?: Check; bench?: Check; steps?: Check; ramp?: Check; surface_ok?: Check; obstruction?: Check; signage?: Check; notes?: string }
+  checklist?: { handrail?: Check; step_edge_contrast?: Check; tactile_paving?: Check; ped_signal?: Check; shelter?: Check; bench?: Check; steps?: Check; ramp?: Check; surface_ok?: Check; obstruction?: Check; signage?: Check; notes?: string }
 }
 
 export type Verdict = 'correct' | 'wrong' | 'missed'
@@ -238,7 +238,7 @@ export function hotspots(segs: Iterable<SegInfo>, p75: number, n = 10): Hotspot[
 
 // Until the pipeline tags every barrier with `profiles`, assume these.
 const SIGHT_ONLY = new Set(['no_tactile', 'silent_signal'])
-const BOTH = new Set(['crossing', 'obstruction', 'surface', 'dark'])
+const BOTH = new Set(['crossing', 'obstruction', 'surface', 'dark', 'no_handrail'])
 export function affects(defs: Record<string, BarrierDef>, barrier: string, who: Profile | 'all'): boolean {
   if (who === 'all') return true
   const ps = defs[barrier]?.profiles ?? (SIGHT_ONLY.has(barrier) ? ['sight'] : BOTH.has(barrier) ? ['mobility', 'sight'] : ['mobility'])
@@ -285,6 +285,8 @@ export function circle([lng, lat]: LngLat, radiusM: number, steps = 48): LngLat[
 export type BlockRoute = {
   id: number | string; blk: string; type: string; dest: string; len: number; trips: number; share: number
   barriers: string[]; coords: LngLat[]
+  /** newer data: Google encoded polyline instead of coords */
+  path?: string
 }
 
 /** Distance from a point to a polyline, metres. */
@@ -329,4 +331,20 @@ export function visibleMidpoint(lines: LngLat[][], [w, s, e, n]: [number, number
     half -= len
   }
   return parts.at(-1)![1]
+}
+
+/** Google encoded polyline (precision 1e5, lat/lng order) -> [[lng, lat], ...]. */
+export function decodePolyline(s: string): LngLat[] {
+  const out: LngLat[] = []
+  let i = 0, lat = 0, lng = 0
+  const next = () => {
+    let shift = 0, result = 0, b: number
+    do { b = s.charCodeAt(i++) - 63; result |= (b & 0x1f) << shift; shift += 5 } while (b >= 0x20)
+    return result & 1 ? ~(result >> 1) : result >> 1
+  }
+  while (i < s.length) {
+    lat += next(); lng += next()
+    out.push([lng / 1e5, lat / 1e5])
+  }
+  return out
 }

@@ -1,12 +1,13 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   ArrowLeftIcon, CameraIcon, CheckIcon, FireIcon, TrafficSignalIcon, XIcon, PlusIcon, ArrowCounterClockwiseIcon, TrashIcon, CrosshairIcon,
   UsersThreeIcon, WarningIcon, ArrowClockwiseIcon,
 } from '@phosphor-icons/react'
 import { BarrierBadge } from './Badge.tsx'
+import { ago, CATEGORIES, catOf, type Category, type Cluster, type ReportRow } from './categories.ts'
 import { FAMILY_LABEL, FAMILY_OF, type Family } from './MapView.tsx'
 import { sortGaps, type BlockRoute, type RiskArea } from './logic.ts'
-import type { Gap, Hotspot, IndexData, SegInfo, SortMode, TownSummary, Verdict, Effort, VisionEntry } from './logic.ts'
+import type { BarrierDef, Gap, Hotspot, IndexData, SegInfo, SortMode, TownSummary, Verdict, Effort, VisionEntry } from './logic.ts'
 
 export const fmt = (n: number) => Math.round(n).toLocaleString('en-SG')
 /** 23565 -> 23.6k */
@@ -22,14 +23,20 @@ export const hwLabel = (hw: string) => HW[hw] ?? hw.replace(/_/g, ' ').replace(/
 export const placeName = (name: string | null) => name ?? 'Unnamed path'
 /** Most footpaths are unnamed in OSM, so fall back to the nearest block. */
 export const gapPlace = (g: Gap) => g.name ?? (g.near ? `Near ${g.near}` : 'Unnamed path')
-const SEAT_CAVEAT = "No seat recorded within 200 m (our assumption; HDB follows BCA's Code on Accessibility for seat spacing)."
-const benches = (len: number) => { const n = Math.max(1, Math.ceil(len / 200)); return n === 1 ? 'one bench' : `about ${n} benches at 200 m spacing` }
+const SEAT_CAVEAT = 'Seats are often missing from OpenStreetMap, so check on site before ordering any.'
+const SEATS = new Set(['rest_gap', 'long_rest_gap'])
+// BCA Code 2025 cl. 4.2.4.3: resting areas at most 50 m apart.
+const benches = (len: number) => { const n = Math.max(1, Math.ceil(len / 50)); return n === 1 ? 'one seat' : `about ${n} seats, one every 50 m` }
 const fixText = (g: Pick<Gap, 'barrier' | 'fix' | 'len' | 'effort'>) =>
-  (g.barrier === 'rest_gap' ? `${g.fix}: ${benches(g.len)}` : g.fix) + `. ${EFFORT[g.effort]}.`
+  (SEATS.has(g.barrier) ? `${g.fix}: ${benches(g.len)}` : g.fix) + `. ${EFFORT[g.effort]}.`
 const sourceOf = (b: string, fromMap: boolean) =>
-  !fromMap ? 'Reported by residents' : b === 'rest_gap' ? 'OpenStreetMap benches and bus stops (often incomplete)' : 'OpenStreetMap tags'
+  !fromMap ? 'Reported by residents' : SEATS.has(b) ? 'OpenStreetMap benches and bus stops (often incomplete)' : 'OpenStreetMap tags'
 
 export type SaveState = 'ok' | 'down' | 'backup'
+
+/** A barrier definition, with a safe stand-in when the data is newer than index.json. */
+const defOf = (index: IndexData, b: string): BarrierDef =>
+  index.barriers[b] ?? { label: b.replace(/_/g, ' ').replace(/^./, c => c.toUpperCase()), severity: 1, fix: 'Check on site', effort: 'medium' }
 
 export function Notice({ tone = 'info', children }: { tone?: 'info' | 'error'; children: ReactNode }) {
   return (
@@ -253,6 +260,7 @@ function Unknowns({ keys, index }: { keys: string[]; index: IndexData }) {
 }
 
 const CHECKS: [keyof NonNullable<VisionEntry['checklist']>, string][] = [
+  ['handrail', 'Handrail'], ['step_edge_contrast', 'Contrasting step edges'],
   ['tactile_paving', 'Tactile paving'], ['ped_signal', 'Pedestrian signal'],
   ['shelter', 'Shelter'], ['bench', 'Bench'], ['steps', 'Steps'], ['ramp', 'Ramp'],
   ['surface_ok', 'Surface in good condition'], ['obstruction', 'Path partly blocked'], ['signage', 'Signage'],
@@ -337,7 +345,7 @@ export function GapDetail({ gap, onHotspot, removed, rank, total, sortLabel, ver
         {saveError && <Notice tone="error">{saveError}</Notice>}
       </section>
       {segs[0] && <CrossingInfo seg={segs[0]} barriers={segs[0].barriers} />}
-      {gap.barrier === 'rest_gap' && <p className="muted">{SEAT_CAVEAT}</p>}
+      {SEATS.has(gap.barrier) && <p className="muted">{SEAT_CAVEAT}</p>}
       {gap.planned && (
         <div className="planned">
           <p><strong>Already planned:</strong> {gap.planned.note}</p>
@@ -360,6 +368,7 @@ export function GapDetail({ gap, onHotspot, removed, rank, total, sortLabel, ver
           <div><dt>Severity</dt><dd>{gap.severity} of 3</dd></div>
           <div><dt>Length affected</dt><dd>{metres(gap.len)}</dd></div>
           <div><dt>Source</dt><dd>{gap.source}</dd></div>
+          {index.barriers[gap.barrier]?.rule && <div><dt>Standard</dt><dd>{index.barriers[gap.barrier].rule}</dd></div>}
           {gap.owner && <div><dt>Likely owner</dt><dd>{gap.owner} (our estimate; check with the Town Council)</dd></div>}
           <Unknowns keys={unknown} index={index} />
           <div><dt>Street-image check</dt><dd>{segs.some(s => s.vision) ? `Photo checked on ${segs.filter(s => s.vision).length} of ${segs.length} sections. Open a section for the results.` : 'Not run yet'}</dd></div>
@@ -407,7 +416,7 @@ export function SegmentDetail({ seg, barriers, verdictFor, index, photo, saveSta
       {shown.length === 0 && <p className="empty">No barriers recorded here in OpenStreetMap.</p>}
       <ul className="findings">
         {shown.map(b => {
-          const d = index.barriers[b]
+          const d = defOf(index, b)
           const present = barriers.includes(b)
           return (
             <li key={b} className={present ? '' : 'struck'}>
@@ -427,7 +436,7 @@ export function SegmentDetail({ seg, barriers, verdictFor, index, photo, saveSta
         <summary>Details</summary>
         <dl className="breakdown">
           <div><dt>Length</dt><dd>{metres(seg.len)}{seg.covered ? ', covered' : ''}</dd></div>
-          {shown.map(b => <div key={b}><dt>{index.barriers[b].label}</dt><dd>Severity {index.barriers[b].severity} of 3. Source: {sourceOf(b, seg.barriers.includes(b))}</dd></div>)}
+          {shown.map(b => <div key={b}><dt>{defOf(index, b).label}</dt><dd>Severity {defOf(index, b).severity} of 3. Source: {sourceOf(b, seg.barriers.includes(b))}</dd></div>)}
           <Unknowns keys={seg.unknown} index={index} />
           <PhotoCheck entry={photo} minConf={index.visionMinConfidence ?? 0.6} />
         </dl>
@@ -544,6 +553,7 @@ export function About({ index, figures }: { index: IndexData; figures: TownFigur
         <li>Census 2020: dwelling type by subzone</li>
         <li>data.gov.sg: hawker centres, CHAS clinics and eldercare services</li>
         <li>Basemap: OneMap, Singapore Land Authority</li>
+        <li>Barrier rules follow BCA's Code on Accessibility in the Built Environment 2025; crossings and traffic signals follow LTA (the Code defers street works to LTA).</li>
       </ul>
       <h3>Limits</h3>
       <ul>
@@ -698,6 +708,126 @@ export function RouteDetail({ route, likelihood, typeLabel, barriers, onGap }: {
           </ul>
         ) : <p className="muted">None recorded in the map data.</p>}
       </section>
+    </div>
+  )
+}
+
+/* ---------- Resident reports ---------- */
+
+export type Range = '7' | '30' | 'all'
+export const clusterScore = (c: Cluster) => c.count * (c.ai?.severity ?? 1)
+const topCat = (c: Cluster) => Object.entries(c.categories).sort((a, b) => b[1] - a[1])[0]?.[0] ?? 'other'
+export const clusterTitle = (c: Cluster) => c.ai?.title ?? `${c.count} ${c.count === 1 ? 'report' : 'reports'}: ${catOf(topCat(c)).label}`
+
+export function ReportList({ clusters, loading, error, cats, onCat, range, onRange, region, onPick }: {
+  clusters: Cluster[]; loading: boolean; error: boolean; cats: Set<Category>; onCat: (c: Category) => void
+  range: Range; onRange: (r: Range) => void; region: string; onPick: (c: Cluster) => void
+}) {
+  const [limit, setLimit] = useState(8)
+  const link = `${location.origin}/report`
+  return (
+    <section className="stack-sm" aria-labelledby="rep-h">
+      <div className="list-head">
+        <h2 id="rep-h">Resident reports</h2>
+        <label className="inline-select">
+          <span>From</span>
+          <select value={range} onChange={e => onRange(e.target.value as Range)}>
+            <option value="7">Last 7 days</option>
+            <option value="30">Last 30 days</option>
+            <option value="all">All time</option>
+          </select>
+        </label>
+      </div>
+      <div className="fam-chips" role="group" aria-label="Show reports about">
+        {CATEGORIES.map(c => (
+          <button key={c.key} type="button" className="fam-chip cat-chip" aria-pressed={cats.has(c.key)} onClick={() => onCat(c.key)}>
+            <BarrierBadge barrier={c.barrier} severity={2} size={14} />{c.label}
+          </button>
+        ))}
+      </div>
+      {loading ? <Skeleton rows={3} /> : error ? <Notice tone="error">Reports can't be loaded right now. They will refresh in a minute.</Notice> : !clusters.length ? (
+        <p className="empty">No reports yet in {region}. Residents can send one at <a href={link}>{link.replace(/^https?:\/\//, '')}</a>.</p>
+      ) : (
+        <>
+          <ol className="list gaps" aria-label="Report clusters">
+            {clusters.slice(0, limit).map(c => (
+              <li key={c.id}>
+                <button type="button" className="row gap-row" data-at={`${c.lng},${c.lat}`} onClick={() => onPick(c)}>
+                  <BarrierBadge barrier={c.ai?.barrier && c.ai.barrier !== 'other' ? c.ai.barrier : catOf(topCat(c)).barrier} severity={c.ai?.severity ?? 1} />
+                  <span className="gap-body">
+                    <span className="issue">{clusterTitle(c)}</span>
+                    <span className="row-meta">{c.count} {c.count === 1 ? 'report' : 'reports'}, last {ago(c.last)}</span>
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ol>
+          {clusters.length > limit && <button type="button" className="btn btn-secondary wide" onClick={() => setLimit(l => l + 10)}>Show more ({clusters.length - limit} left)</button>}
+        </>
+      )}
+    </section>
+  )
+}
+
+export function ClusterDetail({ cluster, reports, match, onGap }: {
+  cluster: Cluster; reports: ReportRow[]; match: Gap | null; onGap: (g: Gap) => void
+}) {
+  const [big, setBig] = useState<ReportRow | null>(null)
+  const dlg = useRef<HTMLDialogElement>(null)
+  useEffect(() => { if (big) dlg.current?.showModal() }, [big])
+  const photos = reports.filter(r => r.has_photo)
+  const dateOf = (iso: string) => new Date(iso).toLocaleDateString('en-SG', { day: 'numeric', month: 'short', year: 'numeric' })
+  const ai = cluster.ai
+  return (
+    <div className="stack">
+      <div className="issue-head">
+        <BarrierBadge barrier={ai?.barrier && ai.barrier !== 'other' ? ai.barrier : catOf(topCat(cluster)).barrier} severity={ai?.severity ?? 1} size={26} />
+        <div>
+          <h2>{clusterTitle(cluster)}</h2>
+          <p className="sub">{cluster.count} {cluster.count === 1 ? 'report' : 'reports'} from residents, {ago(cluster.first)} to {ago(cluster.last)}</p>
+        </div>
+      </div>
+      {cluster.ai_pending && !ai ? (
+        <p className="muted" role="status">Summarising {cluster.count} {cluster.count === 1 ? 'report' : 'reports'}…</p>
+      ) : ai ? (
+        <div className="ai-box">
+          <p className="ai-label">AI summary of {cluster.count} resident {cluster.count === 1 ? 'report' : 'reports'}</p>
+          <p>{ai.summary}</p>
+          <p><strong>Suggested fix:</strong> {ai.suggested_fix}</p>
+          <p className="muted">Severity {ai.severity} of 3. Written by an AI model from what residents said; check on site.</p>
+        </div>
+      ) : <p className="muted">No AI summary yet. The reports are listed below.</p>}
+      {match && (
+        <button type="button" className="row gap-row" onClick={() => onGap(match)}>
+          <BarrierBadge barrier={match.barrier} severity={match.severity} />
+          <span className="gap-body"><span className="issue">Matches modelled barrier</span><span className="row-meta">{match.label}, {gapPlace(match)}. Open this fix.</span></span>
+        </button>
+      )}
+      {photos.length > 0 && (
+        <div className="thumbs" role="list" aria-label="Photos from residents">
+          {photos.map(r => (
+            <button key={r.id} type="button" role="listitem" className="thumb" onClick={() => setBig(r)} aria-label={`Open photo: ${catOf(r.category).label}, ${dateOf(r.created)}`}>
+              <img src={`/api/reports/${r.id}/photo`} loading="lazy" alt={`${catOf(r.category).label}, ${dateOf(r.created)}`} />
+            </button>
+          ))}
+        </div>
+      )}
+      <section className="stack-sm" aria-labelledby="rep-list-h">
+        <h3 id="rep-list-h">What residents said</h3>
+        <ul className="list">
+          {reports.map(r => (
+            <li key={r.id} className="report-item">
+              <span className="row-title">{catOf(r.category).label}</span>
+              <span className="row-meta">{dateOf(r.created)}{r.address_hint ? `, ${r.address_hint}` : ''}</span>
+              {r.description ? <p>{r.description}</p> : <p className="muted">No description.</p>}
+            </li>
+          ))}
+        </ul>
+      </section>
+      <dialog ref={dlg} className="lightbox" onClose={() => setBig(null)} aria-label="Photo">
+        {big && <img src={`/api/reports/${big.id}/photo`} alt={`${catOf(big.category).label}, ${dateOf(big.created)}`} />}
+        <form method="dialog"><button className="btn btn-secondary" autoFocus>Close</button></form>
+      </dialog>
     </div>
   )
 }

@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { Map as MLMap, setWorkerUrl, AttributionControl, NavigationControl, Popup, Marker, type GeoJSONSource, type MapMouseEvent, type ExpressionSpecification } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
-import { ICONS, barrierImages } from './Badge.tsx'
+import { ICONS, barrierImages, iconImage } from './Badge.tsx'
+import { ChatCircleTextIcon } from '@phosphor-icons/react'
 // MapLibre 6 finds its worker next to its own module file, which a bundle breaks. Hand it a bundled worker instead.
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 setWorkerUrl(workerUrl)
@@ -28,14 +29,14 @@ export const MAP_COLORS = {
     ramp: ['#9ec5f4', '#6da7ec', '#2a78d6', '#1c5cab', '#0d366b'],
     barrier: '#c93636', ring: '#fafafa', highlight: '#0f766e', route: '#d4541f',
     block: '#71717a', dest: '#27272a', outline: '#52525b', muted: '#71717a', bg: '#f4f4f5', veil: '#52525b',
-    risk: '#c2410c',
+    risk: '#c2410c', report: '#27272a',
     family: { transport: '#2a78d6', food: '#eb6834', health: '#1baf7a', shops: '#eda100', care: '#e87ba4', active: '#008300' } as Record<Family, string>,
   },
   dark: {
     ramp: ['#1c5cab', '#2a78d6', '#5598e7', '#86b6ef', '#cde2fb'],
     barrier: '#ec7070', ring: '#0b0b0d', highlight: '#2dd4bf', route: '#f08a5d',
     block: '#a1a1aa', dest: '#e4e4e7', outline: '#a1a1aa', muted: '#a1a1aa', bg: '#18181b', veil: '#09090b',
-    risk: '#ff8a5c',
+    risk: '#ff8a5c', report: '#e4e4e7',
     family: { transport: '#3987e5', food: '#d95926', health: '#199e70', shops: '#c98500', care: '#d55181', active: '#008300' } as Record<Family, string>,
   },
 }
@@ -75,6 +76,11 @@ type Props = {
   context: string[]
   /** barrier icons drawn on the paths (town view) */
   bicons: BarrierIcon[]
+  /** Reports view: resident report clusters, the selected one, and its individual reports */
+  reportsMode: boolean
+  rclusters: { id: string; at: LngLat; count: number }[]
+  selCluster: string | null
+  rdots: LngLat[]
   selectedGap: string | null
   /** 25 m ring around a short selected gap */
   ring: LngLat | null
@@ -90,6 +96,7 @@ type Props = {
   onSegment: (id: string) => void
   onGap: (id: string) => void
   onRisk: (id: string) => void
+  onCluster: (id: string) => void
   onRoute: (id: string) => void
   onBlock: (label: string) => void
   onPoint: (p: LngLat) => void
@@ -195,7 +202,7 @@ export default function MapView(p: Props) {
     const setup = () => {
       if (setUp) return
       setUp = true
-      for (const id of ['subzones', 'segments', 'gaps', 'blocks', 'dests', 'routes', 'draft', 'risk', 'troutes', 'route-hl', 'sel-ring', 'bicons'])
+      for (const id of ['subzones', 'segments', 'gaps', 'blocks', 'dests', 'routes', 'draft', 'risk', 'troutes', 'route-hl', 'sel-ring', 'bicons', 'rclusters', 'rdots'])
         map.addSource(id, { type: 'geojson', data: EMPTY })
       map.addLayer({ id: 'subzones-fill', type: 'fill', source: 'subzones', paint: { 'fill-opacity': 0.5 } })
       map.addLayer({ id: 'subzones-line', type: 'line', source: 'subzones', paint: { 'line-width': 0.6, 'line-opacity': 0.5 } })
@@ -226,6 +233,18 @@ export default function MapView(p: Props) {
       map.addLayer({ id: 'bicons-pt1', type: 'symbol', source: 'bicons', minzoom: 16, filter: ['==', ['get', 'sev'], '1'], layout: iconLayout as never })
       map.addLayer({ id: 'bicons-pt', type: 'symbol', source: 'bicons', minzoom: 13.5, filter: ['!=', ['get', 'sev'], '1'], layout: iconLayout as never })
       barrierImages(Object.keys(ICONS)).then(list => list.forEach(({ name, img }) => { if (!map.hasImage(name)) map.addImage(name, img, { pixelRatio: 2 }) }))
+      // Resident report clusters: a speech-bubble badge in a circle sized by how many reports.
+      map.addLayer({ id: 'rclusters-ring', type: 'circle', source: 'rclusters', paint: {
+        'circle-radius': ['interpolate', ['linear'], ['sqrt', ['get', 'count']], 1, 14, 5, 30],
+        'circle-opacity': 0.18, 'circle-stroke-width': 2,
+      } })
+      map.addLayer({ id: 'rclusters', type: 'symbol', source: 'rclusters', layout: { 'icon-allow-overlap': true, 'symbol-sort-key': ['-', 0, ['get', 'count']] } as never })
+      map.addLayer({ id: 'rdots', type: 'circle', source: 'rdots', paint: { 'circle-radius': 6, 'circle-stroke-width': 2 } })
+      for (const sc of ['light', 'dark'] as const) {
+        const c = MAP_COLORS[sc]
+        iconImage(ChatCircleTextIcon, c.report, c.ring, c.ring).then(img => { if (!map.hasImage(`rc-${sc}`)) map.addImage(`rc-${sc}`, img, { pixelRatio: 2 }) })
+        iconImage(ChatCircleTextIcon, c.muted, c.ring, c.ring).then(img => { if (!map.hasImage(`rc-g-${sc}`)) map.addImage(`rc-g-${sc}`, img, { pixelRatio: 2 }) })
+      }
       map.addLayer({ id: 'context', type: 'line', source: 'segments', filter: ['in', ['get', 'id'], ['literal', []]], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-width': 5, 'line-opacity': 0.45 } })
       map.addLayer({ id: 'sel-ring', type: 'line', source: 'sel-ring', paint: { 'line-width': 3 } })
       map.addLayer({ id: 'highlight-case', type: 'line', source: 'segments', filter: ['in', ['get', 'id'], ['literal', []]], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-width': HL_CASE } })
@@ -247,7 +266,7 @@ export default function MapView(p: Props) {
 
     const pick = (e: MapMouseEvent) => {
       const b: [[number, number], [number, number]] = [[e.point.x - 6, e.point.y - 6], [e.point.x + 6, e.point.y + 6]]
-      const layers = (live.current.routesMode ? ['bicons-pt', 'bicons-pt1', 'blocks', 'troutes'] : ['bicons-pt', 'bicons-pt1', 'gaps', 'segments-hit', 'risk-fill', ...(live.current.town ? [] : ['subzones-fill'])]).filter(l => map.getLayer(l) && map.getLayoutProperty(l, 'visibility') !== 'none')
+      const layers = (live.current.reportsMode ? ['rclusters', 'rclusters-ring'] : live.current.routesMode ? ['bicons-pt', 'bicons-pt1', 'blocks', 'troutes'] : ['bicons-pt', 'bicons-pt1', 'gaps', 'segments-hit', 'risk-fill', ...(live.current.town ? [] : ['subzones-fill'])]).filter(l => map.getLayer(l) && map.getLayoutProperty(l, 'visibility') !== 'none')
       return map.queryRenderedFeatures(b, { layers })[0]
     }
     map.on('click', e => {
@@ -255,7 +274,8 @@ export default function MapView(p: Props) {
       if (c.draft) return c.onPoint([+e.lngLat.lng.toFixed(6), +e.lngLat.lat.toFixed(6)])
       const f = pick(e)
       if (!f) return c.onEmpty()
-      if (f.layer.id === 'gaps' || f.layer.id.startsWith('bicons')) c.onGap(String(f.properties.id))
+      if (f.layer.id.startsWith('rclusters')) c.onCluster(String(f.properties.id))
+      else if (f.layer.id === 'gaps' || f.layer.id.startsWith('bicons')) c.onGap(String(f.properties.id))
       else if (f.layer.id === 'troutes') c.onRoute(String(f.properties.id))
       else if (f.layer.id === 'blocks') c.onBlock(`Blk ${f.properties.blk} ${f.properties.street}`)
       else if (f.layer.id === 'risk-fill') c.onRisk(String(f.properties.id))
@@ -301,7 +321,7 @@ export default function MapView(p: Props) {
   const map = ready ? mapRef.current : null
   const set = (id: string, data: FeatureCollection | null) => (map?.getSource(id) as GeoJSONSource | undefined)?.setData(data ?? EMPTY)
 
-  const focus = p.highlight.length > 0 || !!p.routeHl
+  const focus = p.highlight.length > 0 || !!p.routeHl || !!p.selCluster
 
   // Colours follow the scheme; a selection greys out everything else.
   useEffect(() => {
@@ -337,9 +357,9 @@ export default function MapView(p: Props) {
     map.setPaintProperty('route-hl-case', 'line-color', c.ring)
     map.setPaintProperty('route-hl', 'line-color', c.highlight)
     // In Routes mode footfall steps back so the routes read.
-    map.setPaintProperty('segments', 'line-color', focus || p.routesMode ? c.muted : ['case', hot, c.ramp[4], step('foot', p.footBreaks, c.ramp)] as unknown as ExpressionSpecification)
-    map.setPaintProperty('segments', 'line-opacity', focus || p.routesMode ? 0.25 : ['case', ['<', ['get', 'foot'], p50], 0.3, 1] as unknown as ExpressionSpecification)
-    map.setPaintProperty('segments', 'line-width', focus || p.routesMode ? 1.25 : ['interpolate', ['linear'], ['zoom'], 13, w(0.5, 1.2, 2.5, 5), 17, w(1, 2.5, 5, 11)] as unknown as ExpressionSpecification)
+    map.setPaintProperty('segments', 'line-color', focus || p.routesMode || p.reportsMode ? c.muted : ['case', hot, c.ramp[4], step('foot', p.footBreaks, c.ramp)] as unknown as ExpressionSpecification)
+    map.setPaintProperty('segments', 'line-opacity', focus || p.routesMode || p.reportsMode ? 0.25 : ['case', ['<', ['get', 'foot'], p50], 0.3, 1] as unknown as ExpressionSpecification)
+    map.setPaintProperty('segments', 'line-width', focus || p.routesMode || p.reportsMode ? 1.25 : ['interpolate', ['linear'], ['zoom'], 13, w(0.5, 1.2, 2.5, 5), 17, w(1, 2.5, 5, 11)] as unknown as ExpressionSpecification)
     map.setPaintProperty('gaps', 'circle-opacity', focus ? 0.35 : 1)
     map.setPaintProperty('highlight-case', 'line-color', c.ring)
     map.setPaintProperty('highlight', 'line-color', c.highlight)
@@ -353,7 +373,20 @@ export default function MapView(p: Props) {
     map.setPaintProperty('draft-line', 'line-color', c.highlight)
     map.setPaintProperty('draft-pts', 'circle-color', c.highlight)
     map.setPaintProperty('draft-pts', 'circle-stroke-color', c.ring)
-  }, [map, p.scheme, p.footBreaks, p.subzoneBreaks, p.town, focus, p.footP, p.hotIds, p.routesMode])
+    // Report clusters: the selected one keeps its colour, the rest grey out.
+    const sel = ['==', ['get', 'id'], p.selCluster ?? '']
+    map.setLayoutProperty('rclusters', 'icon-image', ['case', sel, `rc-${p.scheme}`, focus, `rc-g-${p.scheme}`, `rc-${p.scheme}`] as unknown as ExpressionSpecification)
+    map.setPaintProperty('rclusters-ring', 'circle-color', ['case', sel, c.report, focus, c.muted, c.report] as unknown as ExpressionSpecification)
+    map.setPaintProperty('rclusters-ring', 'circle-stroke-color', ['case', sel, c.report, focus, c.muted, c.report] as unknown as ExpressionSpecification)
+    map.setPaintProperty('rdots', 'circle-color', c.report)
+    map.setPaintProperty('rdots', 'circle-stroke-color', c.ring)
+  }, [map, p.scheme, p.footBreaks, p.subzoneBreaks, p.town, focus, p.footP, p.hotIds, p.routesMode, p.reportsMode, p.selCluster])
+  useEffect(() => {
+    set('rclusters', { type: 'FeatureCollection', features: p.rclusters.map(r => ({ type: 'Feature', properties: { id: r.id, count: r.count }, geometry: { type: 'Point', coordinates: r.at } })) })
+  }, [map, p.rclusters])
+  useEffect(() => {
+    set('rdots', { type: 'FeatureCollection', features: p.rdots.map(at => ({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: at } })) })
+  }, [map, p.rdots])
 
   useEffect(() => {
     set('risk', { type: 'FeatureCollection', features: p.risk.map(r => ({ type: 'Feature', properties: { id: r.id }, geometry: { type: 'Polygon', coordinates: [circle(r.center, r.radiusM)] } })) })
@@ -400,13 +433,16 @@ export default function MapView(p: Props) {
       focus ? true : false, 'g',
       ['get', 'planned'], 'g',
       ['get', 'sev']]
-    const img = ['concat', 'b-', ['get', 'barrier'], '-', tint, '-', p.scheme] as unknown as ExpressionSpecification
+    // Unknown barrier keys (newer data than this build) fall back to the generic warning badge.
+    const img = ['coalesce',
+      ['image', ['concat', 'b-', ['get', 'barrier'], '-', tint, '-', p.scheme]],
+      ['image', ['concat', 'b-_-', tint, '-', p.scheme]]] as unknown as ExpressionSpecification
     for (const l of ['bicons-pt', 'bicons-pt1']) {
       map.setLayoutProperty(l, 'icon-image', img)
       map.setPaintProperty(l, 'icon-opacity', ['case', ['get', 'planned'], 0.75, 1] as unknown as ExpressionSpecification)
-      map.setLayoutProperty(l, 'visibility', p.layers.icons && p.town ? 'visible' : 'none')
+      map.setLayoutProperty(l, 'visibility', p.layers.icons && p.town && !p.reportsMode ? 'visible' : 'none')
     }
-  }, [map, p.scheme, p.selectedGap, focus, p.layers.icons, p.town])
+  }, [map, p.scheme, p.selectedGap, focus, p.layers.icons, p.town, p.reportsMode])
   useEffect(() => {
     if (!map) return
     map.setFilter('context', ['in', ['get', 'id'], ['literal', p.context]] as ExpressionSpecification)
@@ -507,9 +543,12 @@ export default function MapView(p: Props) {
     vis('gaps', p.layers.barriers && !p.routesMode)
     vis('blocks', p.layers.blocks || p.routesMode)
     vis('troutes', p.routesMode)
+    vis('rclusters', p.reportsMode)
+    vis('rclusters-ring', p.reportsMode)
+    vis('rdots', p.reportsMode)
     vis('dests', p.layers.destinations)
     vis('routes', p.layers.routes)
-  }, [map, p.layers, p.routesMode])
+  }, [map, p.layers, p.routesMode, p.reportsMode])
 
   useEffect(() => {
     if (!map || !p.fly) return

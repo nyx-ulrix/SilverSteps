@@ -50,6 +50,8 @@ class Checklist(BaseModel):
     signage: Item       # wayfinding or crossing signs visible
     tactile_paving: Item  # raised tactile (studded or ribbed) paving at kerbs, crossings or stairs
     ped_signal: Item    # a pedestrian traffic light, with push-button box if visible
+    handrail: Item      # continuous handrail beside any steps or ramp on the path ("unknown" if there are none)
+    step_edge_contrast: Item  # step edges marked in a contrasting colour ("unknown" if there are no steps)
     notes: str          # one short sentence on anything a senior would struggle with
 
 

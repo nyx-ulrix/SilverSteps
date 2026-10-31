@@ -1,0 +1,46 @@
+/* Companion site for residents: one task per screen, big type, big targets. Tokens come from styles.css. */
+body { overflow-y: auto; }
+.r-wrap { max-width: 560px; margin: 0 auto; padding: 16px 16px calc(32px + env(safe-area-inset-bottom)); font-size: 1.2rem; line-height: 1.55; min-height: 100dvh; }
+.r-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; padding: 8px 0 20px; border-bottom: 1px solid var(--border); margin-bottom: 24px; }
+.r-brand { font-weight: 700; font-size: 1.1rem; }
+.r-progress { color: var(--text-2); font-weight: 600; font-size: 1rem; }
+.r-wrap h1 { font-size: 1.75rem; line-height: 1.25; outline: none; }
+.r-stack { display: grid; gap: 16px; }
+.r-why, .r-muted { color: var(--text-2); }
+.r-muted { font-size: 1.05rem; }
+.r-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 10px; width: 100%;
+  min-height: 56px; padding: 12px 20px; border-radius: 12px; cursor: pointer;
+  font: inherit; font-weight: 700; color: var(--text); background: var(--surface); border: 2px solid var(--text-2);
+}
+.r-btn:hover:not(:disabled) { background: var(--surface-2); }
+.r-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.r-primary { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
+.r-primary:hover:not(:disabled) { background: var(--accent-hover); }
+.r-big { min-height: 72px; font-size: 1.3rem; }
+.r-link { justify-self: start; display: inline-flex; align-items: center; gap: 6px; min-height: 48px; padding: 0 4px; border: 0; background: none; color: var(--accent); font: inherit; font-weight: 600; cursor: pointer; }
+.r-card { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.r-unsent { margin-bottom: 20px; border-color: var(--accent); }
+.r-found { display: flex; align-items: center; gap: 10px; font-weight: 700; }
+.r-found svg { color: var(--accent); flex: none; }
+.r-label { font-weight: 700; }
+.r-input { width: 100%; min-height: 56px; padding: 12px 14px; font: inherit; color: var(--text); background: var(--surface); border: 2px solid var(--text-2); border-radius: 12px; }
+textarea.r-input { resize: vertical; }
+.r-error { display: flex; gap: 10px; align-items: flex-start; padding: 12px 14px; border-radius: 12px; background: var(--error-soft); color: var(--text); }
+.r-error svg { flex: none; color: var(--error); margin-top: 3px; }
+.r-preview { width: 100%; max-height: 50dvh; object-fit: contain; border-radius: 12px; background: var(--surface-2); }
+.r-cats { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.r-cat {
+  display: grid; justify-items: start; gap: 8px; min-height: 96px; padding: 14px; text-align: left; cursor: pointer;
+  font: inherit; font-size: 1.05rem; font-weight: 700; line-height: 1.3; color: var(--text);
+  background: var(--surface); border: 2px solid var(--border); border-radius: 12px;
+}
+.r-cat[aria-checked='true'] { border-color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 2px var(--accent); }
+.r-cat .badge { width: 44px; height: 44px; border-radius: 10px; }
+.r-summary p { margin: 0; }
+.r-cat-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.r-done { text-align: center; justify-items: center; padding-top: 24px; }
+.r-ok { color: var(--accent); }
+.r-map { height: 60dvh; border-radius: 12px; overflow: hidden; border: 1px solid var(--border); }
+.r-pin { width: 28px; height: 28px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg); background: var(--accent); border: 4px solid var(--surface); box-shadow: 0 2px 8px rgb(0 0 0 / 0.35); }
+@media (max-width: 360px) { .r-cats { grid-template-columns: 1fr; } }

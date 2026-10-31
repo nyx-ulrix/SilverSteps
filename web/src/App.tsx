@@ -2,32 +2,33 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import type React from 'react'
 import type { Map as MLMap } from 'maplibre-gl'
 import type { FeatureCollection, LineString } from 'geojson'
-import { InfoIcon, PathIcon, CaretUpIcon, CaretDownIcon, StackIcon, UsersIcon, WheelchairIcon, EyeIcon, FunnelIcon } from '@phosphor-icons/react'
+import { ChatCircleTextIcon, InfoIcon, PathIcon, CaretUpIcon, CaretDownIcon, StackIcon, UsersIcon, WheelchairIcon, EyeIcon, FunnelIcon } from '@phosphor-icons/react'
 import MapView, { riskLetter, type BarrierIcon, FAMILY_LABEL, FAMILY_OF, MAP_COLORS, type Family, type FlyTarget, type Layers, type Scheme } from './MapView.tsx'
 import { api, ApiError, getJSON } from './api.ts'
 import { BarrierBadge } from './Badge.tsx'
+import { CATEGORIES, CAT, type Category, type Cluster, type ReportRow } from './categories.ts'
 import {
-  affects, applyCorrections, breaks, distToLine, metresBetween, hotspots, riskAreas, routeAccuracy, sortGaps, type BlockRoute, type Hotspot,
+  affects, applyCorrections, breaks, decodePolyline, distToLine, metresBetween, hotspots, riskAreas, routeAccuracy, sortGaps, type BlockRoute, type Hotspot,
   type Feedback, type Gap, type IndexData, type LngLat, type Route, type Seg, type SegInfo, type SortMode, type Verdict, type VisionEntry,
 } from './logic.ts'
 import {
-  About, BackButton, CloseButton, DrawPanel, GapDetail, GapList, HotspotDetail, HotspotList, RetryError, RiskDetail, RouteDetail, RouteList, SegmentDetail, Skeleton,
+  About, BackButton, ClusterDetail, CloseButton, ReportList, clusterScore, clusterTitle, type Range, DrawPanel, GapDetail, GapList, HotspotDetail, HotspotList, RetryError, RiskDetail, RouteDetail, RouteList, SegmentDetail, Skeleton,
   routeTitle, type Likelihood, type RouteSort,
   SORT_LABEL, SortControl, TownPicker, fmt, gapPlace, placeName, short, type SaveState,
 } from './Panels.tsx'
 
 type TownData = { slug: string; segments: FeatureCollection; segs: Map<string, SegInfo>; gaps: Gap[] }
-type Sel = { kind: 'gap' | 'segment' | 'hot' | 'risk' | 'route'; id: string; from?: Sel } | null
+type Sel = { kind: 'gap' | 'segment' | 'hot' | 'risk' | 'route' | 'cluster'; id: string; from?: Sel } | null
 type View = 'main' | 'about' | 'draw'
 
 const NONE: never[] = []
 const WHO_OPTS = [['all', 'Everyone', UsersIcon], ['mobility', 'Mobility aid', WheelchairIcon], ['sight', 'Low vision', EyeIcon]] as const
 const WHO_HELP = { mobility: 'Walking frames, wheelchairs, frailty', sight: 'Blind or partially sighted' }
-type ListMode = 'hot' | 'fixes' | 'routes'
+type ListMode = 'hot' | 'fixes' | 'routes' | 'reports'
 type Who = 'all' | 'mobility' | 'sight'
 // #ang-mo-kio/fixes/mobility: town, list view, who-for filter. Shareable.
 const HASH = decodeURIComponent(location.hash.slice(1)).split('/')
-const MODES: ListMode[] = ['hot', 'fixes', 'routes']
+const MODES: ListMode[] = ['hot', 'fixes', 'routes', 'reports']
 const WHOS: Who[] = ['all', 'mobility', 'sight']
 // One health check per page load; town data waits on it so a dead /api costs a single failed request.
 // Resolves to null when /api is up, else the error (backup copy or down).
@@ -86,6 +87,13 @@ export default function App() {
   const [blk, setBlk] = useState('')
   const [segDrawn, setSegDrawn] = useState(false)
   const [whoOpen, setWhoOpen] = useState(false)
+  // The list never waits on the map for more than 3 s after the data is in (WebGL can be slow or missing).
+  useEffect(() => { if (!town || segDrawn) return; const t = setTimeout(() => setSegDrawn(true), 3000); return () => clearTimeout(t) }, [town, segDrawn])
+  // Resident reports (Reports view): fetched when the view opens and every 60 s while it stays open.
+  const [clusters, setClusters] = useState<Cluster[] | null | 'error'>(null)
+  const [reportRows, setReportRows] = useState<ReportRow[]>([])
+  const [range, setRange] = useState<Range>('30')
+  const [cats, setCats] = useState<Set<Category>>(() => new Set(CATEGORIES.map(c => c.key)))
   const [who, setWho] = useState<Who>(() => (WHOS.includes(HASH[2] as Who) ? HASH[2] as Who : 'all'))
   const [view, setView] = useState<View>('main')
   const [draft, setDraft] = useState<LngLat[]>([])
@@ -131,7 +139,7 @@ export default function App() {
 
   // Lazy-load only the selected town's files.
   useEffect(() => {
-    setTown(null); setBlocks(null); setDests(null); setFeedback([]); setRoutes([]); setVision(undefined); setTownRoutes(null); setBlk(''); setSegDrawn(false); setTownErr(false); setSaveError(null)
+    setTown(null); setBlocks(null); setDests(null); setFeedback([]); setRoutes([]); setVision(undefined); setTownRoutes(null); setBlk(''); setSegDrawn(false); setClusters(null); setReportRows([]); setTownErr(false); setSaveError(null)
     if (!slug) return
     let live = true
     const base = `/data/towns/${slug}`
@@ -235,7 +243,10 @@ export default function App() {
   useEffect(() => {
     if (listMode !== 'routes' || !slug || townRoutes !== null) return
     let live = true
-    getJSON<BlockRoute[]>(`/data/towns/${slug}/routes.json`).then(r => live && setTownRoutes(r), () => live && setTownRoutes('error'))
+    getJSON<BlockRoute[]>(`/data/towns/${slug}/routes.json`)
+      // Newer data ships `path` (encoded polyline) instead of `coords`; accept both.
+      .then(rs => rs.map(r => (r.coords ? r : { ...r, coords: decodePolyline(r.path ?? '') })).filter(r => r.coords.length > 1))
+      .then(r => live && setTownRoutes(r), () => live && setTownRoutes('error'))
     return () => { live = false }
   }, [listMode, slug, townRoutes])
   const routeList = Array.isArray(townRoutes) ? townRoutes : NONE
@@ -255,6 +266,24 @@ export default function App() {
   const mapRoutes = useMemo(() => (slug && listMode === 'routes'
     ? filteredRoutes.slice(0, 150).map(r => ({ id: String(r.id), coords: r.coords, family: FAMILY_OF[r.type] ?? 'shops' as Family, trips: r.trips }))
     : NONE), [slug, listMode, filteredRoutes])
+  const aiPending = Array.isArray(clusters) && clusters.some(c => c.ai_pending)
+  useEffect(() => {
+    if (listMode !== 'reports' || !slug) return
+    let live = true
+    const since = range === 'all' ? '' : `&since=${new Date(Date.now() - +range * 86400000).toISOString().slice(0, 10)}`
+    const pull = () => {
+      getJSON<Cluster[]>(`/api/reports/clusters?town=${encodeURIComponent(slug)}${since}`).then(c => live && setClusters(c), () => live && setClusters(cs => (Array.isArray(cs) ? cs : 'error')))
+      getJSON<ReportRow[]>(`/api/reports?town=${encodeURIComponent(slug)}${since}`).then(r => live && setReportRows(r), () => {})
+    }
+    pull()
+    // Every 60 s; every 10 s while Claude is still summarising a cluster.
+    const t = setInterval(pull, aiPending ? 10000 : 60000)
+    return () => { live = false; clearInterval(t) }
+  }, [listMode, slug, range, aiPending])
+  const shownClusters = useMemo(() => (Array.isArray(clusters) ? clusters : NONE as Cluster[])
+    .filter(c => Object.keys(c.categories).some(k => cats.has(k as Category) && (who === 'all' || (CAT[k as Category]?.profiles ?? ['mobility', 'sight']).includes(who))))
+    .sort((a, b) => clusterScore(b) - clusterScore(a)), [clusters, cats, who])
+  const mapClusters = useMemo(() => (slug && listMode === 'reports' ? shownClusters.map(c => ({ id: c.id, at: [c.lng, c.lat] as LngLat, count: c.count })) : NONE), [slug, listMode, shownClusters])
   const risks = useMemo(() => riskAreas(slug ? visibleGaps : rankedTop), [slug, visibleGaps, rankedTop])
   const townNames = useMemo(() => Object.fromEntries((index?.towns ?? []).map(t => [t.slug, t.name])), [index])
 
@@ -300,6 +329,11 @@ export default function App() {
     if (mobile) setSheetOpen(true)
     const k = r.radiusM / 110540
     select({ kind: 'risk', id }, [[r.center[0] - k, r.center[1] - k], [r.center[0] + k, r.center[1] + k]])
+  }
+  const pickCluster = (c: Cluster) => {
+    if (mobile) setSheetOpen(true)
+    const pts = reportRows.filter(r => c.report_ids.includes(r.id)).map(r => [r.lng, r.lat] as LngLat)
+    select({ kind: 'cluster', id: c.id }, pts.length > 1 ? pts : [[c.lng, c.lat]])
   }
   const pickRoute = (r: BlockRoute) => {
     if (mobile) setSheetOpen(true)
@@ -347,6 +381,9 @@ export default function App() {
   const selSeg = sel?.kind === 'segment' ? town?.segs.get(sel.id) ?? null : null
   const selHot = sel?.kind === 'hot' ? hot.find(h => h.id === sel.id) ?? null : null
   const selRisk = sel?.kind === 'risk' ? risks.find(r => r.id === sel.id) ?? null : null
+  const selCluster = sel?.kind === 'cluster' ? shownClusters.find(c => c.id === sel.id) ?? null : null
+  const clusterReports = useMemo(() => (selCluster ? reportRows.filter(r => selCluster.report_ids.includes(r.id)) : NONE as ReportRow[]), [selCluster, reportRows])
+  const rdots = useMemo(() => clusterReports.map(r => [r.lng, r.lat] as LngLat), [clusterReports])
   const selRoute = sel?.kind === 'route' ? routeList.find(r => String(r.id) === sel.id) ?? null : null
   // Barrier icons on the paths: every visible (filtered, corrected) gap; long ones repeat along their segments.
   const bicons = useMemo<BarrierIcon[]>(() => (!town || !index ? NONE : visibleGaps.map(g => ({
@@ -467,6 +504,15 @@ export default function App() {
       <RetryError onRetry={() => setTownTry(n => n + 1)}>This region's data could not be loaded. It may still be processing.</RetryError></div>
   } else if (!town || !corrected || !segDrawn) {
     body = <div className="stack">{picker}<Skeleton /></div>
+  } else if (selCluster) {
+    // A modelled barrier of the same kind within 40 m backs the residents up.
+    const barrier = selCluster.ai?.barrier && selCluster.ai.barrier !== 'other' ? selCluster.ai.barrier
+      : CAT[Object.entries(selCluster.categories).sort((a, b) => b[1] - a[1])[0]?.[0] as Category]?.barrier
+    const match = visibleGaps.find(g => g.barrier === barrier && metresBetween(g.at, [selCluster.lng, selCluster.lat]) <= 40) ?? null
+    body = <>
+      <div className="detail-bar"><span /><CloseButton onClick={() => setSel(null)} /></div>
+      <ClusterDetail cluster={selCluster} reports={clusterReports} match={match} onGap={pickGap} />
+    </>
   } else if (selRoute) {
     // A route barrier links to a fix when a gap with that barrier sits on the route.
     const near = (b: string) => visibleGaps.find(g => g.barrier === b && distToLine(g.at, selRoute.coords) <= 40) ?? null
@@ -523,8 +569,15 @@ export default function App() {
           <button type="button" aria-pressed={listMode === 'hot'} onClick={() => setListMode('hot')}>Hotspots</button>
           <button type="button" aria-pressed={listMode === 'fixes'} onClick={() => setListMode('fixes')}>Fixes</button>
           <button type="button" aria-pressed={listMode === 'routes'} onClick={() => setListMode('routes')}>Routes</button>
+          <button type="button" aria-pressed={listMode === 'reports'} onClick={() => setListMode('reports')}>Reports</button>
         </div>
-        {listMode === 'routes' ? (
+        {listMode === 'reports' ? (
+          <ReportList
+            clusters={shownClusters} loading={clusters === null} error={clusters === 'error'} cats={cats}
+            onCat={k => setCats(prev => { const n = new Set(prev); if (n.has(k)) n.delete(k); else n.add(k); return n })}
+            range={range} onRange={setRange} region={summary?.name ?? 'this region'} onPick={pickCluster}
+          />
+        ) : listMode === 'routes' ? (
           <RouteList
             routes={filteredRoutes} total={filteredRoutes.length} families={families} colors={MAP_COLORS[scheme].family}
             onFamily={f => setFamilies(prev => { const n = new Set(prev); if (n.has(f)) n.delete(f); else n.add(f); return n })}
@@ -554,7 +607,7 @@ export default function App() {
     : listMode === 'fixes' && ranked[0] ? { text: `Top fix: ${ranked[0].label}, ${gapPlace(ranked[0]).replace(/^Near/, 'near')}, ~${short(ranked[0].foot)} trips/wk`, open: () => pickGap(ranked[0]) }
       : listMode === 'hot' && hot[0] ? { text: `Busiest: ${hotTitle(hot[0]).replace(/^Near /, '')}, ~${short(hot[0].foot)} trips/wk`, open: () => pickHot(hot[0]) }
         : listMode === 'routes' && filteredRoutes[0] ? { text: `Top route: ${routeTitle(filteredRoutes[0])}`, open: () => pickRoute(filteredRoutes[0]) } : null
-  const peekTitle = selRoute ? routeTitle(selRoute) : selRisk ? `High risk area ${riskLetter(risks.indexOf(selRisk))}` : selHot ? hotTitle(selHot) : view === 'draw' ? `Draw my route: ${draft.length} points` : selGap ? `${selGap.label}, ${gapPlace(selGap).replace(/^Near/, 'near')}` : selSeg ? placeName(selSeg.name) : summary?.name ?? 'Singapore'
+  const peekTitle = selCluster ? clusterTitle(selCluster) : selRoute ? routeTitle(selRoute) : selRisk ? `High risk area ${riskLetter(risks.indexOf(selRisk))}` : selHot ? hotTitle(selHot) : view === 'draw' ? `Draw my route: ${draft.length} points` : selGap ? `${selGap.label}, ${gapPlace(selGap).replace(/^Near/, 'near')}` : selSeg ? placeName(selSeg.name) : summary?.name ?? 'Singapore'
 
   return (
     <div className={`app${view === 'draw' ? ' drawing' : ''}${sheetOpen ? ' sheet-open' : ''}${sel ? ' has-sel' : ''}`}>
@@ -563,10 +616,12 @@ export default function App() {
         subzones={subzones} subzoneBreaks={subzoneBreaks} town={slug}
         segments={town?.segments ?? null} footBreaks={footBreaks} gaps={mapGaps} pin={pin}
         footP={footP} hotIds={slug ? hotIds : []} numbered={numbered}
-        risk={layers.risk && view === 'main' && listMode !== 'routes' ? risks : NONE}
+        risk={layers.risk && view === 'main' && listMode !== 'routes' && listMode !== 'reports' ? risks : NONE}
         routesMode={!!slug && view === 'main' && listMode === 'routes'}
         troutes={mapRoutes}
         routeHl={routeHl}
+        reportsMode={!!slug && view === 'main' && listMode === 'reports'} rclusters={mapClusters} selCluster={selCluster?.id ?? null} rdots={rdots}
+        onCluster={id => { const c = shownClusters.find(x => x.id === id); if (c) pickCluster(c) }}
         context={selContext} bicons={bicons} selectedGap={selGap?.id ?? null} ring={selGap && selGap.len < 40 ? selGap.at : null}
         onRisk={pickRisk} onRoute={id => { const r = routeList.find(x => String(x.id) === id); if (r) pickRoute(r) }}
         onBlock={b => { setBlk(b); if (mobile) setSheetOpen(true) }}
@@ -592,6 +647,7 @@ export default function App() {
               ? <button type="button" className="peek-btn" onClick={() => { setSheetOpen(true); topItem.open() }}>{topItem.text}</button>
               : <p className="tagline">{mobile && !sheetOpen ? peekTitle : 'Where older residents walk most, and what to fix first. Modelled estimates.'}</p>}
           </div>
+          <a className="btn-link how report-link" href="/report"><ChatCircleTextIcon aria-hidden size={20} /><span className="label">Report a problem</span></a>
           <button type="button" className="btn-link how" onClick={() => { setView(v => (v === 'about' ? 'main' : 'about')); setSheetOpen(true) }} aria-pressed={view === 'about'}>
             <InfoIcon aria-hidden size={20} /><span className="label">How this works</span>
           </button>

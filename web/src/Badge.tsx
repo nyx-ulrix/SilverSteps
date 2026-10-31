@@ -1,6 +1,6 @@
 import {
   StairsIcon, TrafficSignIcon, SpeakerSlashIcon, ArrowFatLineUpIcon, UmbrellaIcon, ChairIcon, WarningIcon,
-  MoonStarsIcon, TrendUpIcon, ProhibitIcon, FootprintsIcon, type Icon,
+  MoonStarsIcon, TrendUpIcon, ProhibitIcon, FootprintsIcon, HandGrabbingIcon, ChatCircleTextIcon, type Icon,
 } from '@phosphor-icons/react'
 import { createRoot } from 'react-dom/client'
 import { flushSync } from 'react-dom'
@@ -9,6 +9,11 @@ export const ICONS: Record<string, Icon> = {
   steps: StairsIcon, crossing: TrafficSignIcon, silent_signal: SpeakerSlashIcon, kerb: ArrowFatLineUpIcon,
   no_shelter: UmbrellaIcon, rest_gap: ChairIcon, surface: WarningIcon, dark: MoonStarsIcon, slope: TrendUpIcon,
   obstruction: ProhibitIcon, no_tactile: FootprintsIcon,
+  long_rest_gap: ChairIcon, steep: TrendUpIcon, no_handrail: HandGrabbingIcon,
+  // '_' is the generic fallback image for barrier keys this build doesn't know yet
+  _: WarningIcon,
+  // resident report category "Something else"
+  other: ChatCircleTextIcon,
 }
 
 /** Barrier icon in a square badge tinted by severity (3 strong, 2 amber, 1 neutral). */
@@ -58,4 +63,21 @@ export async function barrierImages(barriers: string[]): Promise<{ name: string;
     }
   }
   return Promise.all(out)
+}
+
+/** One round map badge image (2x) for any Phosphor icon. */
+export async function iconImage(I: Icon, bg: string, fg: string, halo: string, px = 44): Promise<HTMLImageElement> {
+  const box = document.createElement('div')
+  const root = createRoot(box)
+  flushSync(() => root.render(<I size={22} />))
+  const inner = box.innerHTML.replace(/^<svg[^>]*>/, '').replace(/<\/svg>$/, '')
+  root.unmount()
+  const g = px / 2, s = px / 2
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${px}" height="${px}" viewBox="0 0 ${px} ${px}">` +
+    `<circle cx="${g}" cy="${g}" r="${g - 2.5}" fill="${bg}" stroke="${halo}" stroke-width="4"/>` +
+    `<svg x="${(px - s) / 2}" y="${(px - s) / 2}" width="${s}" height="${s}" viewBox="0 0 256 256" fill="${fg}" color="${fg}">${inner}</svg></svg>`
+  const img = new Image(px, px)
+  img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg)
+  await img.decode()
+  return img
 }
