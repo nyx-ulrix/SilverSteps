@@ -64,3 +64,11 @@ def test_reports():
 def test_point_in_polygon():
     sq = [[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]
     assert m.in_ring(5, 5, sq) and not m.in_ring(15, 5, sq)
+
+
+def test_recent():
+    m.HITS.clear()
+    a = c.post("/api/reports", json={"address_hint": "Blk 1 Somewhere", "category": "other"}).json()["id"]
+    rec = c.get("/api/reports/recent").json()
+    assert rec[0]["id"] == a and rec[0]["town"] is None  # reports outside any region still show up
+    assert c.get("/api/reports/recent", params={"after": a}).json() == []

@@ -355,6 +355,16 @@ def list_reports(town: str = Query(pattern=TOWN), category: Optional[str] = Quer
         return [report_out(r) for r in query_reports(s, town, category, since)]
 
 
+@app.get("/api/reports/recent")
+def recent_reports(after: int = Query(0, ge=0), limit: int = Query(50, ge=1, le=200)):
+    """Newest reports from every region (including ones outside a modelled region), for live updates.
+    Poll with ?after=<highest id seen> to get only new ones."""
+    with Session(engine) as s:
+        rows = s.scalars(select(Report).where(Report.id > after).order_by(Report.id.desc()).limit(limit)).all()
+        names = {slug: name for slug, name, _, _ in regions()}
+        return [{**report_out(r), "region": names.get(r.town)} for r in rows]
+
+
 @app.get("/api/reports/{rid}/photo")
 def report_photo(rid: int):
     with Session(engine) as s:
