@@ -69,8 +69,9 @@ class Report(Base):
     __tablename__ = "reports"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     town: Mapped[Optional[str]] = mapped_column(String(40), index=True, nullable=True)
-    lat: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    lng: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Double precision: MariaDB FLOAT is single precision (~1 m error at Singapore's longitude).
+    lat: Mapped[Optional[float]] = mapped_column(Float(53), nullable=True)
+    lng: Mapped[Optional[float]] = mapped_column(Float(53), nullable=True)
     accuracy_m: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     address_hint: Mapped[Optional[str]] = mapped_column(String(200), nullable=True)
     category: Mapped[str] = mapped_column(String(20))
@@ -91,6 +92,10 @@ class ClusterSummary(Base):
 
 
 Base.metadata.create_all(engine)
+if not IS_SQLITE:  # tables made before the switch to double precision: widen in place (idempotent)
+    from sqlalchemy import text
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE reports MODIFY lat DOUBLE NULL, MODIFY lng DOUBLE NULL"))
 
 TOWN = r"^[a-z0-9-]{1,40}$"
 Barrier = Literal["steps", "crossing", "kerb", "no_shelter", "rest_gap", "surface", "dark", "slope", "obstruction",
