@@ -13,7 +13,6 @@ Everything is **modelled**, not counted: senior numbers per block are spread fro
 | `pipeline/vision.py` | Claude checks Street View photos of the busiest paths against a fixed checklist |
 | `web/` | Vite + React + MapLibre site |
 | `server/` | FastAPI: serves the site and stores corrections and resident routes (MariaDB on Deployer, SQLite locally) |
-| `failover/` | Cloudflare Worker: serves the Firebase backup when the main server is down |
 
 ## Run
 
@@ -31,4 +30,4 @@ OpenStreetMap (BBBike Singapore extract), data.gov.sg (HDB property information,
 
 ## Deploy
 
-Main: Deployer (`Dockerfile`) at silversteps.liewjiaen.com. Backup: Firebase Hosting site `silversteps-sg` (`firebase deploy --only hosting:backup`), switched in automatically by `failover/worker.js`.
+Deployer (`Dockerfile`) at silversteps.liewjiaen.com. Pushes to `main` redeploy automatically.

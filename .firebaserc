@@ -1,4 +1,0 @@
-{
-  "projects": { "default": "liewjiaen-toolkit" },
-  "targets": { "liewjiaen-toolkit": { "hosting": { "backup": ["silversteps-sg"] } } }
-}
