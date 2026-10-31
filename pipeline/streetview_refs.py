@@ -13,6 +13,17 @@ import requests
 
 from vision import bearing  # also loads .env
 
+
+def write_retry(path, text, tries=10):
+    import time  # Windows briefly locks files another program is reading
+    for i in range(tries):
+        try:
+            return path.write_text(text)
+        except OSError:
+            if i == tries - 1:
+                raise
+            time.sleep(1 + i)
+
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT.parent / "web" / "public" / "data"
 CACHE = ROOT / "cache" / "svrefs"
@@ -56,14 +67,14 @@ def main():
                 refs[g["id"]] = r
         cache_p.write_text(json.dumps(refs))
         attach(gaps, refs)
-        gaps_p.write_text(json.dumps(gaps, separators=(",", ":")))
+        write_retry(gaps_p, json.dumps(gaps, separators=(",", ":")))
         all_refs.update({(slug, k): v for k, v in refs.items()})
         print(f"{slug}: {sum(1 for g in gaps if g['sv'])}/{len(gaps)} gaps have Street View", flush=True)
     top_p = DATA / "top-gaps.json"
     top = json.loads(top_p.read_text())
     for g in top:
         g["sv"] = all_refs.get((g["town"], g["id"]))
-    top_p.write_text(json.dumps(top, separators=(",", ":")))
+    write_retry(top_p, json.dumps(top, separators=(",", ":")))
 
 
 if __name__ == "__main__":

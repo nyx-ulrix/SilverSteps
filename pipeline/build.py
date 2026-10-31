@@ -802,6 +802,17 @@ def _run(town):
         return town, None, repr(e)
 
 
+def write_retry(path, text, tries=10):
+    """Windows briefly locks files another program is reading (dev server, file watcher): retry instead of dying."""
+    for i in range(tries):
+        try:
+            return path.write_text(text)
+        except OSError:
+            if i == tries - 1:
+                raise
+            time.sleep(1 + i)
+
+
 def write_index(nat):
     towns = []
     for p in sorted((OUT / "towns").glob("*/summary.json")):
@@ -811,8 +822,8 @@ def write_index(nat):
     for t in towns:
         top += json.loads((OUT / "towns" / t["slug"] / "gaps.json").read_text())[:100]
     top.sort(key=lambda g: g["foot"] * g["severity"], reverse=True)
-    (OUT / "top-gaps.json").write_text(json.dumps(top[:500], separators=(",", ":")))
-    (OUT / "index.json").write_text(json.dumps({
+    write_retry(OUT / "top-gaps.json", json.dumps(top[:500], separators=(",", ":")))
+    write_retry(OUT / "index.json", json.dumps({
         "built": time.strftime("%Y-%m-%d"),
         "vision": "done" if any((CACHE / "vision").glob("*.json")) else "not_run",
         "visionSource": "Google Street View photos checked by Claude Opus 5.5",

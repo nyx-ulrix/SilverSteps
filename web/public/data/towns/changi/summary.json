@@ -1,1 +1,1 @@
-{"slug": "changi", "name": "Changi", "seniors": 200, "residents": 1780, "seniorsModelled": 120, "blocks": 1, "weeklyTrips": 3360, "segments": 103, "gaps": 12, "footP50": 106, "footP75": 505, "bbox": [103.96429, 1.30946, 104.03344, 1.39378], "center": [103.99782, 1.350316], "secs": 15}
+{"slug": "changi", "name": "Changi", "seniors": 200, "residents": 1780, "seniorsModelled": 120, "blocks": 1, "weeklyTrips": 3360, "segments": 103, "gaps": 16, "footP50": 106, "footP75": 505, "bbox": [103.96429, 1.30946, 104.03344, 1.39378], "center": [103.99782, 1.350316], "secs": 8}
