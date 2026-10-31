@@ -48,7 +48,7 @@ export function SaveNotice({ state }: { state: SaveState }) {
 
 export function Skeleton({ rows = 6 }: { rows?: number }) {
   return (
-    <div className="skeleton" aria-busy="true" aria-label="Loading town data">
+    <div className="skeleton" aria-busy="true" aria-label="Loading region data">
       {Array.from({ length: rows }, (_, i) => <div key={i} className="sk sk-row" />)}
     </div>
   )
@@ -71,7 +71,7 @@ function ResidentMark() {
 export function TownPicker({ towns, value, onChange }: { towns: TownSummary[]; value: string | null; onChange: (slug: string | null) => void }) {
   return (
     <div className="field">
-      <label htmlFor="town">Town</label>
+      <label htmlFor="town">Region</label>
       <select id="town" value={value ?? ''} onChange={e => onChange(e.target.value || null)}>
         <option value="">All of Singapore</option>
         {[...towns].sort((a, b) => a.name.localeCompare(b.name)).map(t => <option key={t.slug} value={t.slug}>{t.name}</option>)}
@@ -141,7 +141,7 @@ export function GapList({ gaps: all, townNames, onPick, splitPlanned = true }: {
 /* ---------- Hotspots ---------- */
 
 export function HotspotList({ spots, title, onPick }: { spots: Hotspot[]; title: (h: Hotspot) => string; onPick: (h: Hotspot) => void }) {
-  if (!spots.length) return <p className="empty">No busy stretches found in this town's data.</p>
+  if (!spots.length) return <p className="empty">No busy stretches found in this region's data.</p>
   return (
     <ol className="list gaps" aria-label="Busiest stretches">
       {spots.slice(0, 8).map((h, i) => (
@@ -169,7 +169,7 @@ export function HotspotDetail({ spot, title, rank, fixes, onGap }: {
         <p className="sub">Busy stretch {rank}, {metres(spot.len)} long</p>
       </div>
       <Trips n={spot.foot} />
-      <p className="muted">On the busiest part. One of the busiest quarter of paths in this town (modelled).</p>
+      <p className="muted">On the busiest part. One of the busiest quarter of paths in this region (modelled).</p>
       <section className="stack-sm" aria-labelledby="hot-fixes">
         <h3 id="hot-fixes">Barriers on this stretch</h3>
         {fixes.length ? (
@@ -499,12 +499,12 @@ export function About({ index, figures }: { index: IndexData; figures: TownFigur
           <p className="accuracy">
             {figures.accuracy
               ? <><strong>{Math.round(figures.accuracy.share * 100)}%</strong> of resident-drawn routes ({figures.routes} {figures.routes === 1 ? 'route' : 'routes'}, {fmt(figures.accuracy.lengthM)} m) follow paths we modelled as busy.</>
-              : 'No resident routes drawn here yet, so the model has not been checked against real walks in this town.'}
+              : 'No resident routes drawn here yet, so the model has not been checked against real walks in this region.'}
           </p>
         </>
       ) : (
         <p>
-          About <strong>{fmt(index.totals.seniors)}</strong> residents aged 65 and over live in HDB towns
+          About <strong>{fmt(index.totals.seniors)}</strong> residents aged 65 and over live in the regions covered here
           {index.totals.weeklyTrips > 0 && <>, making an estimated <strong>{fmt(index.totals.weeklyTrips)}</strong> walking trips a week</>}.
         </p>
       )}
@@ -514,7 +514,8 @@ export function About({ index, figures }: { index: IndexData; figures: TownFigur
         <li>Each senior makes a set number of trips a week to nearby places (table below).</li>
         <li>Trips follow the easiest walking route, where stairs, unsheltered stretches and unsignalised crossings count as longer.
           Adding up the trips on each footpath gives its estimated senior footfall.</li>
-        <li>Barriers come from OpenStreetMap tags. Fixes are ranked by estimated trips times barrier severity.</li>
+        <li>Barriers come from OpenStreetMap tags. Fixes are ranked by estimated trips times barrier severity, and numbered 1, 2, 3 on the map.</li>
+        <li>High risk areas, lettered A to E, circle up to five places where several barriers sit within 150 m of each other. They are scored by adding up trips times severity for every barrier inside.</li>
         <li>Residents and planners can mark findings correct or wrong, add missed barriers and draw the routes they really walk.</li>
       </ol>
       <h3>Assumptions</h3>
@@ -572,11 +573,11 @@ export function RetryError({ children, onRetry }: { children: ReactNode; onRetry
 
 /* ---------- Risk areas ---------- */
 
-export function RiskDetail({ rank, area, onPick }: { rank: number; area: RiskArea; onPick: (g: Gap) => void }) {
+export function RiskDetail({ letter, area, onPick }: { letter: string; area: RiskArea; onPick: (g: Gap) => void }) {
   return (
     <div className="stack">
       <div>
-        <h2>High risk area {rank}</h2>
+        <h2>High risk area {letter}</h2>
         <p className="sub">{area.gaps.length} {area.gaps.length === 1 ? 'barrier' : 'barriers'} close together on busy paths</p>
       </div>
       <p className="muted">Ranked by estimated senior trips times barrier severity, added up across the area (modelled).</p>
@@ -631,7 +632,7 @@ export function RouteList({ routes, total, families, onFamily, colors, sort, onS
         <datalist id="blk-list">{blocks.map(b => <option key={b} value={b} />)}</datalist>
         <span id="blk-help" className="help">Or click a block on the map.</span>
       </div>
-      {loading ? <Skeleton rows={4} /> : error ? <Notice tone="error">Routes for this town aren't ready yet.</Notice> : !routes.length ? (
+      {loading ? <Skeleton rows={4} /> : error ? <Notice tone="error">Routes for this region aren't ready yet.</Notice> : !routes.length ? (
         <p className="empty">No routes match. Try another block or turn on more place types.</p>
       ) : (
         <>

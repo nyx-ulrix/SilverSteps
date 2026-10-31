@@ -105,6 +105,26 @@ const HL_WIDTH = ['interpolate', ['linear'], ['zoom'], 13, 6, 16, 9, 18, 11] as 
 const HL_CASE = ['interpolate', ['linear'], ['zoom'], 13, 13, 16, 16, 18, 18] as unknown as ExpressionSpecification
 const HL_PULSE = ['interpolate', ['linear'], ['zoom'], 13, 12, 16, 16, 18, 18] as unknown as ExpressionSpecification
 
+/** Risk areas are lettered so they never read as fix ranks (which are numbers). */
+export const riskLetter = (i: number) => 'ABCDEFGHIJ'[i] ?? String(i + 1)
+
+/**
+ * Collision for DOM markers: walk in rank order and hide any that overlaps one already shown.
+ * Returns how many were hidden.
+ */
+function declutter(ms: Marker[]): number {
+  const shown: DOMRect[] = []
+  let hidden = 0
+  for (const m of ms) {
+    const el = m.getElement()
+    el.style.visibility = ''
+    const r = el.getBoundingClientRect()
+    if (shown.some(o => r.left < o.right && r.right > o.left && r.top < o.bottom && r.bottom > o.top)) { el.style.visibility = 'hidden'; hidden++ }
+    else shown.push(r)
+  }
+  return hidden
+}
+
 const step = (prop: string, br: number[], vals: (string | number)[]): ExpressionSpecification =>
   br.length ? ['step', ['get', prop], vals[0], ...br.flatMap((b, i) => [b, vals[i + 1]])] as unknown as ExpressionSpecification : vals[0] as unknown as ExpressionSpecification
 
@@ -171,7 +191,10 @@ export default function MapView(p: Props) {
     document.documentElement.addEventListener('mouseleave', stop)
 
     // style.load, not load: 'load' waits for every basemap tile, and slow OneMap tiles must not hold our layers back.
-    map.once('style.load', () => {
+    let setUp = false
+    const setup = () => {
+      if (setUp) return
+      setUp = true
       for (const id of ['subzones', 'segments', 'gaps', 'blocks', 'dests', 'routes', 'draft', 'risk', 'troutes', 'route-hl', 'sel-ring', 'bicons'])
         map.addSource(id, { type: 'geojson', data: EMPTY })
       map.addLayer({ id: 'subzones-fill', type: 'fill', source: 'subzones', paint: { 'fill-opacity': 0.5 } })
@@ -196,10 +219,12 @@ export default function MapView(p: Props) {
       // The selection sits above every other layer.
       // Barrier icons on the path: exactly one per gap. Collision keeps the worst.
       const iconLayout = {
-        'icon-size': 1, 'icon-allow-overlap': false, 'icon-padding': 2,
+        'icon-size': 1, 'icon-allow-overlap': false, 'icon-padding': 14,
         'symbol-sort-key': ['-', 0, ['get', 'score']],
       } as const
-      map.addLayer({ id: 'bicons-pt', type: 'symbol', source: 'bicons', minzoom: 13.5, layout: iconLayout as never })
+      // Severity 2-3 from region zoom; severity 1 (comfort) only close up, so region view stays calm.
+      map.addLayer({ id: 'bicons-pt1', type: 'symbol', source: 'bicons', minzoom: 16, filter: ['==', ['get', 'sev'], '1'], layout: iconLayout as never })
+      map.addLayer({ id: 'bicons-pt', type: 'symbol', source: 'bicons', minzoom: 13.5, filter: ['!=', ['get', 'sev'], '1'], layout: iconLayout as never })
       barrierImages(Object.keys(ICONS)).then(list => list.forEach(({ name, img }) => { if (!map.hasImage(name)) map.addImage(name, img, { pixelRatio: 2 }) }))
       map.addLayer({ id: 'context', type: 'line', source: 'segments', filter: ['in', ['get', 'id'], ['literal', []]], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-width': 5, 'line-opacity': 0.45 } })
       map.addLayer({ id: 'sel-ring', type: 'line', source: 'sel-ring', paint: { 'line-width': 3 } })
@@ -211,11 +236,18 @@ export default function MapView(p: Props) {
       map.setBearing(0); map.setPitch(0)
       setReady(true)
       live.current.onMapReady(map)
-    })
+    }
+    // An inline style can finish loading inside the constructor, before a listener is attached,
+    // so check now as well as on the event.
+    map.once('style.load', setup)
+    const check = () => { if (!setUp && map.isStyleLoaded()) setup() }
+    map.on('styledata', check)
+    map.on('sourcedata', check)
+    check()
 
     const pick = (e: MapMouseEvent) => {
       const b: [[number, number], [number, number]] = [[e.point.x - 6, e.point.y - 6], [e.point.x + 6, e.point.y + 6]]
-      const layers = (live.current.routesMode ? ['bicons-pt', 'blocks', 'troutes'] : ['bicons-pt', 'gaps', 'segments-hit', 'risk-fill', ...(live.current.town ? [] : ['subzones-fill'])]).filter(l => map.getLayer(l) && map.getLayoutProperty(l, 'visibility') !== 'none')
+      const layers = (live.current.routesMode ? ['bicons-pt', 'bicons-pt1', 'blocks', 'troutes'] : ['bicons-pt', 'bicons-pt1', 'gaps', 'segments-hit', 'risk-fill', ...(live.current.town ? [] : ['subzones-fill'])]).filter(l => map.getLayer(l) && map.getLayoutProperty(l, 'visibility') !== 'none')
       return map.queryRenderedFeatures(b, { layers })[0]
     }
     map.on('click', e => {
@@ -252,7 +284,7 @@ export default function MapView(p: Props) {
       tip.setLngLat((f.geometry as GeoJSON.Point).coordinates as LngLat).setDOMContent(node).addTo(map)
     })
     map.on('mouseleave', 'dests', () => tip.remove())
-    for (const l of ['bicons-pt']) {
+    for (const l of ['bicons-pt', 'bicons-pt1']) {
       map.on('mousemove', l, e => {
         const f = e.features?.[0]
         if (!f) return
@@ -369,7 +401,7 @@ export default function MapView(p: Props) {
       ['get', 'planned'], 'g',
       ['get', 'sev']]
     const img = ['concat', 'b-', ['get', 'barrier'], '-', tint, '-', p.scheme] as unknown as ExpressionSpecification
-    for (const l of ['bicons-pt']) {
+    for (const l of ['bicons-pt', 'bicons-pt1']) {
       map.setLayoutProperty(l, 'icon-image', img)
       map.setPaintProperty(l, 'icon-opacity', ['case', ['get', 'planned'], 0.75, 1] as unknown as ExpressionSpecification)
       map.setLayoutProperty(l, 'visibility', p.layers.icons && p.town ? 'visible' : 'none')
@@ -387,25 +419,15 @@ export default function MapView(p: Props) {
       const b = document.createElement('button')
       b.type = 'button'
       b.className = 'risk-label'
-      b.innerHTML = `<span class="full">High risk </span>${i + 1}`
-      b.setAttribute('aria-label', `High risk area ${i + 1}`)
+      b.innerHTML = `<span class="full">High risk </span>${riskLetter(i)}`
+      b.setAttribute('aria-label', `High risk area ${riskLetter(i)}`)
       b.addEventListener('click', e => { e.stopPropagation(); live.current.onRisk(r.id) })
       return new Marker({ element: b, anchor: 'bottom', offset: [0, -6] }).setLngLat([r.center[0], r.center[1] + r.radiusM / 110540]).addTo(map)
     })
-    // Collision: walk in rank order, hide any label that overlaps one already shown.
-    const declutter = () => {
-      const shown: DOMRect[] = []
-      for (const m of ms) {
-        const el = m.getElement()
-        el.style.visibility = ''
-        const r = el.getBoundingClientRect()
-        const hit = shown.some(o => r.left < o.right && r.right > o.left && r.top < o.bottom && r.bottom > o.top)
-        if (hit) el.style.visibility = 'hidden'; else shown.push(r)
-      }
-    }
-    declutter()
-    map.on('moveend', declutter)
-    return () => { map.off('moveend', declutter); ms.forEach(m => m.remove()) }
+    const run = () => declutter(ms)
+    run()
+    map.on('moveend', run)
+    return () => { map.off('moveend', run); ms.forEach(m => m.remove()) }
   }, [map, p.risk])
 
   useEffect(() => { set('subzones', p.subzones) }, [map, p.subzones])
@@ -458,7 +480,12 @@ export default function MapView(p: Props) {
       b.addEventListener('click', e => { e.stopPropagation(); live.current.onGap(g.id) })
       return new Marker({ element: b, anchor: 'bottom-left', offset: [4, -8] }).setLngLat(g.at).addTo(map)
     })
+    // Same collision rule as the risk labels: a lower rank that would overlap a higher one waits for zoom.
+    const run = () => declutter(numMarkers.current)
+    run()
+    map.on('moveend', run)
     return () => {
+      map.off('moveend', run)
       numMarkers.current.forEach(m => m.remove()); numMarkers.current = []
     }
   }, [map, p.numbered])

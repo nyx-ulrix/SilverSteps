@@ -386,7 +386,8 @@ textarea { resize: vertical; }
 @media (max-width: 767px) {
   .crosshair { left: 50%; top: calc((100dvh - var(--peek)) / 2); }
   .app.sheet-open .crosshair { top: 27dvh; }
-  .drawing .panel.open, .has-sel .panel.open { height: 50dvh; }
+  .drawing .panel.open { height: 50dvh; }
+  .has-sel .panel.open { height: 56dvh; }
   .btn-link.how .label { display: none; }
 }
 
@@ -473,3 +474,15 @@ textarea { resize: vertical; }
 .icon-legend { list-style: none; margin: 0 0 6px 30px; padding: 0; display: grid; gap: 4px; font-size: 0.85rem; }
 .icon-legend li { display: flex; align-items: center; gap: 8px; }
 .icon-legend .badge { width: 26px; height: 26px; border-radius: 50%; }
+@media (max-width: 767px) {
+  /* expanded sheet: the header shrinks to brand + link (the peek height is only for the collapsed state) */
+  .panel.open .panel-head { min-height: 0; padding-top: 22px; padding-bottom: 10px; align-items: center; }
+  .has-sel .panel.open .detail-bar { margin: -4px 0 0; }
+  .has-sel .panel.open .issue-head .badge { width: 36px; height: 36px; }
+  .has-sel .panel.open .issue-head h2 { font-size: 1.15rem; }
+  .has-sel .panel.open .hero-num { font-size: 1.6rem; }
+  .has-sel .panel.open .stack { gap: 12px; }
+}
+/* the peek stays one line so the collapsed sheet keeps its height */
+.peek-btn { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 767px) { .maplibregl-ctrl-bottom-right { bottom: calc(var(--peek) + 12px); } }

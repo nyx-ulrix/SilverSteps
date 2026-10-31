@@ -3,7 +3,7 @@ import type React from 'react'
 import type { Map as MLMap } from 'maplibre-gl'
 import type { FeatureCollection, LineString } from 'geojson'
 import { InfoIcon, PathIcon, CaretUpIcon, CaretDownIcon, StackIcon, UsersIcon, WheelchairIcon, EyeIcon, FunnelIcon } from '@phosphor-icons/react'
-import MapView, { type BarrierIcon, FAMILY_LABEL, FAMILY_OF, MAP_COLORS, type Family, type FlyTarget, type Layers, type Scheme } from './MapView.tsx'
+import MapView, { riskLetter, type BarrierIcon, FAMILY_LABEL, FAMILY_OF, MAP_COLORS, type Family, type FlyTarget, type Layers, type Scheme } from './MapView.tsx'
 import { api, ApiError, getJSON } from './api.ts'
 import { BarrierBadge } from './Badge.tsx'
 import {
@@ -168,7 +168,7 @@ export default function App() {
 
   const padding = mobile
     // The sheet sits at its peek while browsing, and at half height while something is selected.
-    ? { top: 64, right: 16, bottom: sheetOpen ? Math.round(innerHeight * 0.5) + 24 : 124, left: 16 }
+    ? { top: 64, right: 16, bottom: sheetOpen ? Math.round(innerHeight * 0.56) + 24 : 124, left: 16 }
     : { top: 80, right: 80, bottom: 80, left: 496 }
 
   const pickTown = (s: string) => {
@@ -458,13 +458,13 @@ export default function App() {
           <div className="list-head"><h2 id="fixes-h">Top fixes in Singapore</h2><SortControl value={sort} onChange={setSort} /></div>
           {index.towns.length
             ? <GapList key="sg" gaps={rankedTop} townNames={townNames} onPick={pickGap} />
-            : <p className="empty">Town footpath data is still being built. Towns will appear here as they finish.</p>}
+            : <p className="empty">Footpath data is still being built. Regions will appear here as they finish.</p>}
         </section>
       </div>
     )
   } else if (townErr) {
     body = <div className="stack">{picker}
-      <RetryError onRetry={() => setTownTry(n => n + 1)}>This town's data could not be loaded. It may still be processing.</RetryError></div>
+      <RetryError onRetry={() => setTownTry(n => n + 1)}>This region's data could not be loaded. It may still be processing.</RetryError></div>
   } else if (!town || !corrected || !segDrawn) {
     body = <div className="stack">{picker}<Skeleton /></div>
   } else if (selRoute) {
@@ -479,7 +479,7 @@ export default function App() {
   } else if (selRisk) {
     body = <>
       <div className="detail-bar"><span /><CloseButton onClick={() => setSel(null)} /></div>
-      <RiskDetail rank={risks.indexOf(selRisk) + 1} area={selRisk} onPick={pickGap} />
+      <RiskDetail letter={riskLetter(risks.indexOf(selRisk))} area={selRisk} onPick={pickGap} />
     </>
   } else if (selHot) {
     const ids = new Set(selHot.segs)
@@ -554,7 +554,7 @@ export default function App() {
     : listMode === 'fixes' && ranked[0] ? { text: `Top fix: ${ranked[0].label}, ${gapPlace(ranked[0]).replace(/^Near/, 'near')}, ~${short(ranked[0].foot)} trips/wk`, open: () => pickGap(ranked[0]) }
       : listMode === 'hot' && hot[0] ? { text: `Busiest: ${hotTitle(hot[0]).replace(/^Near /, '')}, ~${short(hot[0].foot)} trips/wk`, open: () => pickHot(hot[0]) }
         : listMode === 'routes' && filteredRoutes[0] ? { text: `Top route: ${routeTitle(filteredRoutes[0])}`, open: () => pickRoute(filteredRoutes[0]) } : null
-  const peekTitle = selRoute ? routeTitle(selRoute) : selRisk ? `High risk area ${risks.indexOf(selRisk) + 1}` : selHot ? hotTitle(selHot) : view === 'draw' ? `Draw my route: ${draft.length} points` : selGap ? `${selGap.label}, ${gapPlace(selGap).replace(/^Near/, 'near')}` : selSeg ? placeName(selSeg.name) : summary?.name ?? 'Singapore'
+  const peekTitle = selRoute ? routeTitle(selRoute) : selRisk ? `High risk area ${riskLetter(risks.indexOf(selRisk))}` : selHot ? hotTitle(selHot) : view === 'draw' ? `Draw my route: ${draft.length} points` : selGap ? `${selGap.label}, ${gapPlace(selGap).replace(/^Near/, 'near')}` : selSeg ? placeName(selSeg.name) : summary?.name ?? 'Singapore'
 
   return (
     <div className={`app${view === 'draw' ? ' drawing' : ''}${sheetOpen ? ' sheet-open' : ''}${sel ? ' has-sel' : ''}`}>
