@@ -34,6 +34,8 @@ export type Gap = {
   id: string; barrier: string; label: string; severity: number; fix: string; effort: Effort
   foot: number; len: number; name: string | null; near?: string | null; segs: string[]; at: LngLat; source: string; town: string
   sv?: { pano: string; date?: string; heading?: number } | null
+  owner?: string
+  planned?: { note: string; source: string } | null
   corrected?: boolean
 }
 
@@ -132,10 +134,14 @@ function rebuild(g: Gap, list: SegInfo[]): Gap {
 export type SortMode = 'impact' | 'seniors' | 'quick'
 const EFFORT_RANK: Record<Effort, number> = { low: 0, medium: 1, high: 2 }
 
+/** Works already planned (HDB / LTA) count half in every sort mode, so unplanned barriers rise. */
+const plannedFactor = (g: Gap) => (g.planned ? 0.5 : 1)
+
 export function sortGaps(gaps: Gap[], mode: SortMode): Gap[] {
-  const impact = (g: Gap) => g.foot * g.severity
+  const impact = (g: Gap) => g.foot * g.severity * plannedFactor(g)
+  const foot = (g: Gap) => g.foot * plannedFactor(g)
   return [...gaps].sort((a, b) =>
-    mode === 'seniors' ? b.foot - a.foot || impact(b) - impact(a)
+    mode === 'seniors' ? foot(b) - foot(a) || impact(b) - impact(a)
       : mode === 'quick' ? EFFORT_RANK[a.effort] - EFFORT_RANK[b.effort] || impact(b) - impact(a)
         : impact(b) - impact(a))
 }
@@ -293,4 +299,34 @@ export function distToLine(p: LngLat, line: LngLat[]): number {
     best = Math.min(best, Math.hypot(ax + t * dx, ay + t * dy))
   }
   return best
+}
+
+/**
+ * One icon per long gap: the point halfway (by length) along the parts of its lines inside `bbox`
+ * [w, s, e, n]. Planar Liang-Barsky clipping per segment. Null when nothing is visible.
+ */
+export function visibleMidpoint(lines: LngLat[][], [w, s, e, n]: [number, number, number, number]): LngLat | null {
+  const parts: [LngLat, LngLat, number][] = []
+  for (const line of lines) for (let i = 1; i < line.length; i++) {
+    const [x0, y0] = line[i - 1], [x1, y1] = line[i]
+    const dx = x1 - x0, dy = y1 - y0
+    let t0 = 0, t1 = 1
+    const clip = (p: number, q: number) => {
+      if (p === 0) return q >= 0
+      const r = q / p
+      if (p < 0) { if (r > t1) return false; if (r > t0) t0 = r } else { if (r < t0) return false; if (r < t1) t1 = r }
+      return true
+    }
+    if (!(clip(-dx, x0 - w) && clip(dx, e - x0) && clip(-dy, y0 - s) && clip(dy, n - y0))) continue
+    const a: LngLat = [x0 + t0 * dx, y0 + t0 * dy], b: LngLat = [x0 + t1 * dx, y0 + t1 * dy]
+    const len = metresBetween(a, b)
+    if (len > 0) parts.push([a, b, len])
+  }
+  let half = parts.reduce((t, p) => t + p[2], 0) / 2
+  if (!half) return null
+  for (const [a, b, len] of parts) {
+    if (half <= len) { const t = half / len; return [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])] }
+    half -= len
+  }
+  return parts.at(-1)![1]
 }

@@ -31,6 +31,8 @@ assert.deepEqual(r.barriers.get('c'), ['kerb'])
 // route along seg c (foot 1000 >= p50 500) is 100% on busy paths; far away route is 0%
 assert.equal(routeAccuracy([{ town: 't', destination_type: null, coords: [[103.8021, 1.3701], [103.8029, 1.3701]], created: '' }], segs.values(), 500)!.share, 1)
 assert.equal(routeAccuracy([{ town: 't', destination_type: null, coords: [[103.9, 1.4], [103.901, 1.4]], created: '' }], segs.values(), 500)!.share, 0)
+// planned works count half: 1:steps (500x3=1500) planned -> 750, below 2:kerb (1000x2=2000) either way; 400x3 unplanned beats it
+assert.deepEqual(sortGaps([{ ...gaps[0], planned: { note: 'n', source: 's' } }, { ...gaps[0], id: 'x', foot: 300 }], 'impact').map(g => g.id), ['x', '1:steps'])
 console.log('logic ok')
 // hotspots: a (1-2) and b (2-3) share node 2 on way 1 and merge; c (way 2) stays separate; below p75 is dropped
 {
@@ -48,4 +50,12 @@ console.log('logic ok')
   assert.deepEqual(r.map(a => [a.gaps.length, a.score]), [[2, 600], [1, 450]])
   assert.ok(r[0].radiusM >= 80)
   console.log('risk ok')
+}
+// visible midpoint: a line from x=0..10 clipped to x 2..6 puts the icon at x=4; off-screen gives null
+{
+  const { visibleMidpoint } = await import('./logic.ts')
+  const m = visibleMidpoint([[[103.80, 1.37], [103.81, 1.37]]], [103.802, 1.36, 103.806, 1.38])!
+  assert.ok(Math.abs(m[0] - 103.804) < 1e-9 && m[1] === 1.37)
+  assert.equal(visibleMidpoint([[[103.80, 1.37], [103.81, 1.37]]], [104, 1.36, 104.1, 1.38]), null)
+  console.log('midpoint ok')
 }

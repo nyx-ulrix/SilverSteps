@@ -22,7 +22,7 @@ export const hwLabel = (hw: string) => HW[hw] ?? hw.replace(/_/g, ' ').replace(/
 export const placeName = (name: string | null) => name ?? 'Unnamed path'
 /** Most footpaths are unnamed in OSM, so fall back to the nearest block. */
 export const gapPlace = (g: Gap) => g.name ?? (g.near ? `Near ${g.near}` : 'Unnamed path')
-const BENCH_CAVEAT = 'Bench records are often incomplete, so check on site.'
+const SEAT_CAVEAT = "No seat recorded within 200 m (our assumption; HDB follows BCA's Code on Accessibility for seat spacing)."
 const benches = (len: number) => { const n = Math.max(1, Math.ceil(len / 200)); return n === 1 ? 'one bench' : `about ${n} benches at 200 m spacing` }
 const fixText = (g: Pick<Gap, 'barrier' | 'fix' | 'len' | 'effort'>) =>
   (g.barrier === 'rest_gap' ? `${g.fix}: ${benches(g.len)}` : g.fix) + `. ${EFFORT[g.effort]}.`
@@ -95,15 +95,17 @@ export function SortControl({ value, onChange }: { value: SortMode; onChange: (m
 
 /* ---------- Priority list ---------- */
 
-export function GapList({ gaps, townNames, onPick }: { gaps: Gap[]; townNames?: Record<string, string>; onPick: (g: Gap) => void }) {
+export function GapList({ gaps: all, townNames, onPick, splitPlanned = true }: { gaps: Gap[]; townNames?: Record<string, string>; onPick: (g: Gap) => void; splitPlanned?: boolean }) {
   const [limit, setLimit] = useState(6)
-  if (!gaps.length) return <p className="empty">No barriers found on busy paths here. That can also mean OpenStreetMap has little detail for this area.</p>
+  const gaps = splitPlanned ? all.filter(g => !g.planned) : all
+  const planned = splitPlanned ? all.filter(g => g.planned) : []
+  if (!all.length) return <p className="empty">No barriers found on busy paths here. That can also mean OpenStreetMap has little detail for this area.</p>
   return (
     <>
       <ol className="list gaps" aria-label="Priority fixes">
         {gaps.slice(0, limit).map((g, i) => (
           <li key={g.id}>
-            <button type="button" className="row gap-row" onClick={() => onPick(g)} aria-label={`${i + 1}. ${g.label}. ${gapPlace(g)}. Fix: ${g.fix}. About ${fmt(g.foot)} senior trips a week.`}>
+            <button type="button" className="row gap-row" data-at={g.at.join(',')} onClick={() => onPick(g)} aria-label={`${i + 1}. ${g.label}. ${gapPlace(g)}. Fix: ${g.fix}. About ${fmt(g.foot)} senior trips a week.`}>
               <BarrierBadge barrier={g.barrier} severity={g.severity} rank={i + 1} />
               <span className="gap-body">
                 <span className="issue">
@@ -114,7 +116,7 @@ export function GapList({ gaps, townNames, onPick }: { gaps: Gap[]; townNames?: 
                 <span className="chips">
                   <span className="chip">Fix: {g.fix}</span>
                   <span className="chip">~{short(g.foot)} trips/wk</span>
-                  <span className="chip chip-quiet">{EFFORT[g.effort]}</span>
+                  {g.planned ? <span className="chip chip-planned">Already planned</span> : <span className="chip chip-quiet">{EFFORT[g.effort]}</span>}
                 </span>
               </span>
             </button>
@@ -125,6 +127,12 @@ export function GapList({ gaps, townNames, onPick }: { gaps: Gap[]; townNames?: 
         <button type="button" className="btn btn-secondary wide" onClick={() => setLimit(l => l + 10)}>
           Show more ({fmt(gaps.length - limit)} left)
         </button>
+      )}
+      {planned.length > 0 && (
+        <details className="disclosure">
+          <summary>Already planned ({planned.length})</summary>
+          <GapList gaps={planned} townNames={townNames} onPick={onPick} splitPlanned={false} />
+        </details>
       )}
     </>
   )
@@ -138,10 +146,10 @@ export function HotspotList({ spots, title, onPick }: { spots: Hotspot[]; title:
     <ol className="list gaps" aria-label="Busiest stretches">
       {spots.slice(0, 8).map((h, i) => (
         <li key={h.id}>
-          <button type="button" className="row gap-row" onClick={() => onPick(h)}>
+          <button type="button" className="row gap-row" data-at={h.at.join(',')} onClick={() => onPick(h)}>
             <span className="rank">{i + 1}</span>
             <span className="gap-body">
-              <span className="row-title">{title(h)}</span>
+              <span className="row-title">{title(h).replace(/^Near /, '')}</span>
               <span className="row-meta">About {fmt(h.foot)} senior trips a week</span>
             </span>
           </button>
@@ -321,8 +329,21 @@ export function GapDetail({ gap, onHotspot, removed, rank, total, sortLabel, ver
       </div>
       {removed && <Notice>Residents marked this barrier as wrong, so it is no longer in the priority list.</Notice>}
       <Trips n={gap.foot} />
-      {segs[0] && <CrossingInfo seg={segs[0]} barriers={segs[0].barriers} />}
       <p className="fixline"><strong>Fix:</strong> {fixText(gap)}</p>
+      <section className="stack-sm" aria-label="Is this barrier really there?">
+        <VerdictButtons current={verdict} onVerdict={onVerdict} label="Is this barrier really there?" />
+        <Missed index={index} present={[gap.barrier]} saveState={saveState} onMissed={onMissed} />
+        <SaveNotice state={saveState} />
+        {saveError && <Notice tone="error">{saveError}</Notice>}
+      </section>
+      {segs[0] && <CrossingInfo seg={segs[0]} barriers={segs[0].barriers} />}
+      {gap.barrier === 'rest_gap' && <p className="muted">{SEAT_CAVEAT}</p>}
+      {gap.planned && (
+        <div className="planned">
+          <p><strong>Already planned:</strong> {gap.planned.note}</p>
+          <p className="muted">Source: {gap.planned.source}</p>
+        </div>
+      )}
       {gap.sv ? (
         <p className="sv">
           <a href={`https://www.google.com/maps/@?api=1&map_action=pano&pano=${encodeURIComponent(gap.sv.pano)}&heading=${Math.round(gap.sv.heading ?? 0)}&pitch=-10`} target="_blank" rel="noopener noreferrer">
@@ -332,19 +353,14 @@ export function GapDetail({ gap, onHotspot, removed, rank, total, sortLabel, ver
         </p>
       ) : gap.sv === null ? <p className="muted">No Street View here</p> : null}
       {gap.corrected && !removed && <ResidentMark />}
-      <section className="stack-sm" aria-label="Is this barrier really there?">
-        <SaveNotice state={saveState} />
-        <VerdictButtons current={verdict} onVerdict={onVerdict} label="Is this barrier really there?" />
-        <Missed index={index} present={[gap.barrier]} saveState={saveState} onMissed={onMissed} />
-        {saveError && <Notice tone="error">{saveError}</Notice>}
-      </section>
       <details className="disclosure">
         <summary>Details</summary>
         <dl className="breakdown">
           {!removed && <div><dt>Rank</dt><dd>{rank} of {fmt(total)} by {sortLabel.toLowerCase()}</dd></div>}
           <div><dt>Severity</dt><dd>{gap.severity} of 3</dd></div>
           <div><dt>Length affected</dt><dd>{metres(gap.len)}</dd></div>
-          <div><dt>Source</dt><dd>{gap.source}{gap.barrier === 'rest_gap' ? `. ${BENCH_CAVEAT}` : ''}</dd></div>
+          <div><dt>Source</dt><dd>{gap.source}</dd></div>
+          {gap.owner && <div><dt>Likely owner</dt><dd>{gap.owner} (our estimate; check with the Town Council)</dd></div>}
           <Unknowns keys={unknown} index={index} />
           <div><dt>Street-image check</dt><dd>{segs.some(s => s.vision) ? `Photo checked on ${segs.filter(s => s.vision).length} of ${segs.length} sections. Open a section for the results.` : 'Not run yet'}</dd></div>
         </dl>
@@ -537,6 +553,8 @@ export function About({ index, figures }: { index: IndexData; figures: TownFigur
           ? `Street photos (${index.visionSource ?? 'Street View'}) were checked by an AI model on the busiest paths only. Answers below ${Math.round((index.visionMinConfidence ?? 0.6) * 100)}% confidence show as "Not sure from photo". Photos can be old.`
           : 'The street-image check has not been run yet.'}</li>
         <li>No one is tracked. Resident routes are anonymous lines with no account or device attached.</li>
+        <li>What we can't see: dementia-friendly wayfinding, seat design (backrest, armrests, wheelchair space) and non-slip finishes are HDB practice our data can't detect, so they need a site check.</li>
+        <li>Destination weights are our assumptions; HDB guides give none.</li>
       </ul>
       <p className="sub">Data built {new Date(index.built).toLocaleDateString('en-SG', { day: 'numeric', month: 'long', year: 'numeric' })}.</p>
     </div>
@@ -621,7 +639,7 @@ export function RouteList({ routes, total, families, onFamily, colors, sort, onS
           <ol className="list gaps" aria-label="Routes">
             {routes.slice(0, limit).map(r => (
               <li key={r.id}>
-                <button type="button" className="row route-row" onClick={() => onPick(r)}>
+                <button type="button" className="row route-row" data-at={r.coords[0].join(',')} onClick={() => onPick(r)}>
                   <span className="fam-bar" style={{ background: colors[FAMILY_OF[r.type] ?? 'shops'] }} aria-hidden />
                   <span className="gap-body">
                     <span className="issue">{routeTitle(r)}</span>

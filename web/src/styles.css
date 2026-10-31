@@ -174,7 +174,7 @@ textarea { resize: vertical; }
 .switch { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; background: var(--surface-2); border-radius: var(--radius); }
 .switch button {
   min-height: 44px; border: 0; border-radius: 6px; background: none; cursor: pointer;
-  font-weight: 600; color: var(--text-2);
+  font-weight: 600; font-size: 0.9rem; color: var(--text-2);
 }
 .switch button[aria-pressed='true'] { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgb(24 24 27 / 0.15); }
 .tag {
@@ -205,9 +205,18 @@ textarea { resize: vertical; }
 
 /* ---------- who for / crossing ---------- */
 .who { display: grid; gap: 6px; }
-.who > span { font-weight: 600; }
+.who > span { font-weight: 600; font-size: 0.9rem; color: var(--text-2); }
 .switch-3 { grid-template-columns: repeat(3, 1fr); }
-.switch-3 button { font-size: 0.85rem; line-height: 1.2; padding: 4px; }
+.switch-3 button { line-height: 1.2; padding: 4px; }
+.filter-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+.filter-pill {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 10px;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--text);
+  font-size: 0.9rem; font-weight: 600; cursor: pointer;
+}
+.filter-pill svg { color: var(--text-2); }
+.filter-pill[aria-pressed='true'] { border-color: var(--accent); background: var(--accent-soft); }
+.filter-pill[aria-pressed='true'] svg { color: var(--accent); }
 .crossing { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: var(--radius); background: var(--surface-2); }
 .crossing svg { flex: none; margin-top: 2px; color: var(--text-2); }
 
@@ -230,6 +239,8 @@ textarea { resize: vertical; }
 .chips { display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: 2px; }
 .chip { font-size: 0.8rem; padding: 1px 8px; border-radius: 999px; background: var(--surface-2); color: var(--text); border: 1px solid var(--border); }
 .chip-quiet { color: var(--text-2); }
+.chip-planned { border-style: dashed; color: var(--text-2); }
+.planned { padding: 10px 12px; border-left: 3px solid var(--border); background: var(--surface-2); border-radius: 0 var(--radius) var(--radius) 0; display: grid; gap: 4px; }
 
 /* ---------- lists ---------- */
 .list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
@@ -350,11 +361,10 @@ textarea { resize: vertical; }
 
 /* ---------- numbered fix markers ---------- */
 .gap-marker {
-  padding: 0; border: 2px solid var(--surface); border-radius: var(--radius); background: none; cursor: pointer;
-  box-shadow: 0 1px 4px rgb(0 0 0 / 0.35); line-height: 0;
+  min-width: 22px; height: 22px; padding: 0 5px; border-radius: 11px; cursor: pointer;
+  background: var(--text); color: var(--surface); border: 2px solid var(--surface);
+  font: 700 0.75rem/1 'Public Sans Variable', system-ui, sans-serif; box-shadow: 0 1px 3px rgb(0 0 0 / 0.3);
 }
-.gap-marker .badge { width: 32px; height: 32px; }
-.gap-marker:hover .badge { filter: brightness(0.95); }
 .has-sel .gap-marker { filter: grayscale(1); opacity: 0.5; box-shadow: none; }
 
 /* ---------- selection pin ---------- */
@@ -399,7 +409,8 @@ textarea { resize: vertical; }
   padding: 2px 8px; border-radius: 999px; cursor: pointer; white-space: nowrap;
   font: 700 0.75rem/1.4 'Public Sans Variable', system-ui, sans-serif;
   background: var(--surface); color: var(--sev3-fg); border: 2px solid currentColor;
-  box-shadow: 0 1px 3px rgb(0 0 0 / 0.25);
+  /* halo so the pill reads over path lines */
+  box-shadow: 0 0 0 3px var(--surface), 0 2px 6px rgb(0 0 0 / 0.3);
 }
 .has-sel .risk-label { color: var(--text-2); opacity: 0.6; box-shadow: none; }
 
@@ -423,3 +434,42 @@ textarea { resize: vertical; }
 .row.static:hover { background: none; }
 .pin-from { background: var(--surface); box-shadow: 0 0 0 2px var(--accent), 0 2px 8px rgb(0 0 0 / 0.35); border-color: var(--accent); }
 @media (pointer: coarse) { .fam-chip { min-height: 44px; } }
+
+/* ---------- mobile compaction ---------- */
+.picker-row { display: flex; gap: 8px; align-items: flex-end; }
+.picker-row .field { flex: 1; min-width: 0; }
+.picker-row .field label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.who-pop { position: relative; }
+.filter-btn {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 44px; padding: 0 12px; white-space: nowrap;
+  border: 1px solid #71717a; border-radius: var(--radius); background: var(--surface); color: var(--text); font-weight: 600; font-size: 0.9rem; cursor: pointer;
+}
+.popover {
+  position: absolute; z-index: 5; right: 0; top: calc(100% + 6px); width: min(300px, calc(100vw - 32px));
+  display: grid; gap: 8px; padding: 12px; background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--shadow);
+}
+.peek-btn {
+  display: block; width: 100%; min-height: 44px; margin-top: 2px; padding: 0; border: 0; background: none; text-align: left;
+  color: var(--accent); font-weight: 600; font-size: 0.9rem; line-height: 1.35; cursor: pointer;
+}
+@media (max-width: 767px) {
+  .panel.open .tagline { display: none; }
+  .list-head { flex-wrap: nowrap; }
+  .list-head h2 { font-size: 1rem; }
+  .inline-select > span { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  /* detail state: the header shrinks to a handle so the correction buttons land on the first screen */
+  .has-sel .panel.open .panel-head { min-height: 44px; padding: 0 var(--gutter); }
+  .has-sel .panel.open .panel-head .brand, .has-sel .panel.open .panel-head .how { display: none; }
+  .has-sel .panel.open .panel-body { padding-top: 4px; }
+  .risk-label .full { display: none; }
+  .risk-label { min-width: 24px; padding: 2px 6px; }
+}
+/* touch devices pinch to zoom; the buttons only collide with the sheet */
+@media (pointer: coarse) { .maplibregl-ctrl-bottom-right .maplibregl-ctrl-group { display: none; } }
+/* one marker only while something is selected: the pin */
+.has-sel .gap-marker { display: none; }
+
+.icon-legend { list-style: none; margin: 0 0 6px 30px; padding: 0; display: grid; gap: 4px; font-size: 0.85rem; }
+.icon-legend li { display: flex; align-items: center; gap: 8px; }
+.icon-legend .badge { width: 26px; height: 26px; border-radius: 50%; }

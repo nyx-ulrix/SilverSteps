@@ -1,15 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
 import { Map as MLMap, setWorkerUrl, AttributionControl, NavigationControl, Popup, Marker, type GeoJSONSource, type MapMouseEvent, type ExpressionSpecification } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
-import { createRoot, type Root } from 'react-dom/client'
-import { BarrierBadge } from './Badge.tsx'
+import { ICONS, barrierImages } from './Badge.tsx'
 // MapLibre 6 finds its worker next to its own module file, which a bundle breaks. Hand it a bundled worker instead.
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 setWorkerUrl(workerUrl)
 import type { FeatureCollection, Geometry } from 'geojson'
-import { circle, type Gap, type LngLat, type Route } from './logic.ts'
+import { circle, visibleMidpoint, type Gap, type LngLat, type Route } from './logic.ts'
 
-export type Layers = { footfall: boolean; barriers: boolean; blocks: boolean; destinations: boolean; routes: boolean; risk: boolean }
+export type Layers = { footfall: boolean; barriers: boolean; blocks: boolean; destinations: boolean; routes: boolean; risk: boolean; icons: boolean }
+export type BarrierIcon = { id: string; barrier: string; severity: number; planned: boolean; score: number; label: string; at: LngLat; lines: LngLat[][] | null }
 export type Family = 'food' | 'transport' | 'health' | 'active' | 'care' | 'shops'
 export const FAMILY_OF: Record<string, Family> = {
   hawker: 'food', kopitiam: 'food', bus: 'transport', mrt: 'transport', clinic: 'health', polyclinic: 'health',
@@ -71,6 +71,13 @@ type Props = {
   routesMode: boolean
   troutes: { id: string; coords: LngLat[]; family: Family; trips: number }[]
   routeHl: { coords: LngLat[]; from: LngLat; label: string } | null
+  /** busy path around a short selected gap, drawn in a lighter accent for context */
+  context: string[]
+  /** barrier icons drawn on the paths (town view) */
+  bicons: BarrierIcon[]
+  selectedGap: string | null
+  /** 25 m ring around a short selected gap */
+  ring: LngLat | null
   blocks: FeatureCollection | null
   destinations: FeatureCollection | null
   destLabels: Record<string, string>
@@ -89,6 +96,8 @@ type Props = {
   onEmpty: () => void
   onRightDrag: () => void
   onMapReady: (map: MLMap) => void
+  /** fires once the current town's paths have been drawn */
+  onDrawn: () => void
 }
 
 // Selected line: 6px at town zoom, 10px close up, with a 3.5px casing each side.
@@ -126,9 +135,9 @@ export default function MapView(p: Props) {
           dark: { type: 'raster', tiles: [`${OM}/Night/{z}/{x}/{y}.png`], tileSize: 256, minzoom: 11, maxzoom: 19, bounds: [103.5, 1.1, 104.2, 1.55], attribution: ATTRIBUTION },
         },
         layers: [
-          { id: 'bg', type: 'background', paint: { 'background-color': '#f4f4f5' } },
-          { id: 'base-light', type: 'raster', source: 'light' },
-          { id: 'base-dark', type: 'raster', source: 'dark', layout: { visibility: 'none' } },
+          { id: 'bg', type: 'background', paint: { 'background-color': MAP_COLORS[live.current.scheme].bg } },
+          { id: 'base-light', type: 'raster', source: 'light', layout: { visibility: live.current.scheme === 'light' ? 'visible' : 'none' } },
+          { id: 'base-dark', type: 'raster', source: 'dark', layout: { visibility: live.current.scheme === 'dark' ? 'visible' : 'none' } },
         ],
       },
     })
@@ -161,8 +170,9 @@ export default function MapView(p: Props) {
     box.addEventListener('contextmenu', noMenu)
     document.documentElement.addEventListener('mouseleave', stop)
 
-    map.on('load', () => {
-      for (const id of ['subzones', 'segments', 'gaps', 'blocks', 'dests', 'routes', 'draft', 'risk', 'troutes', 'route-hl'])
+    // style.load, not load: 'load' waits for every basemap tile, and slow OneMap tiles must not hold our layers back.
+    map.once('style.load', () => {
+      for (const id of ['subzones', 'segments', 'gaps', 'blocks', 'dests', 'routes', 'draft', 'risk', 'troutes', 'route-hl', 'sel-ring', 'bicons'])
         map.addSource(id, { type: 'geojson', data: EMPTY })
       map.addLayer({ id: 'subzones-fill', type: 'fill', source: 'subzones', paint: { 'fill-opacity': 0.5 } })
       map.addLayer({ id: 'subzones-line', type: 'line', source: 'subzones', paint: { 'line-width': 0.6, 'line-opacity': 0.5 } })
@@ -184,6 +194,15 @@ export default function MapView(p: Props) {
       map.addLayer({ id: 'draft-line', type: 'line', source: 'draft', paint: { 'line-width': 4 } })
       map.addLayer({ id: 'draft-pts', type: 'circle', source: 'draft', filter: ['==', ['geometry-type'], 'Point'], paint: { 'circle-radius': 6, 'circle-stroke-width': 2 } })
       // The selection sits above every other layer.
+      // Barrier icons on the path: exactly one per gap. Collision keeps the worst.
+      const iconLayout = {
+        'icon-size': 1, 'icon-allow-overlap': false, 'icon-padding': 2,
+        'symbol-sort-key': ['-', 0, ['get', 'score']],
+      } as const
+      map.addLayer({ id: 'bicons-pt', type: 'symbol', source: 'bicons', minzoom: 13.5, layout: iconLayout as never })
+      barrierImages(Object.keys(ICONS)).then(list => list.forEach(({ name, img }) => { if (!map.hasImage(name)) map.addImage(name, img, { pixelRatio: 2 }) }))
+      map.addLayer({ id: 'context', type: 'line', source: 'segments', filter: ['in', ['get', 'id'], ['literal', []]], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-width': 5, 'line-opacity': 0.45 } })
+      map.addLayer({ id: 'sel-ring', type: 'line', source: 'sel-ring', paint: { 'line-width': 3 } })
       map.addLayer({ id: 'highlight-case', type: 'line', source: 'segments', filter: ['in', ['get', 'id'], ['literal', []]], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-width': HL_CASE } })
       map.addLayer({ id: 'highlight', type: 'line', source: 'segments', filter: ['in', ['get', 'id'], ['literal', []]], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-width': HL_WIDTH } })
       map.addLayer({ id: 'route-hl-case', type: 'line', source: 'route-hl', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-width': HL_CASE } })
@@ -196,7 +215,7 @@ export default function MapView(p: Props) {
 
     const pick = (e: MapMouseEvent) => {
       const b: [[number, number], [number, number]] = [[e.point.x - 6, e.point.y - 6], [e.point.x + 6, e.point.y + 6]]
-      const layers = (live.current.routesMode ? ['blocks', 'troutes'] : ['gaps', 'segments-hit', 'risk-fill', ...(live.current.town ? [] : ['subzones-fill'])]).filter(l => map.getLayer(l) && map.getLayoutProperty(l, 'visibility') !== 'none')
+      const layers = (live.current.routesMode ? ['bicons-pt', 'blocks', 'troutes'] : ['bicons-pt', 'gaps', 'segments-hit', 'risk-fill', ...(live.current.town ? [] : ['subzones-fill'])]).filter(l => map.getLayer(l) && map.getLayoutProperty(l, 'visibility') !== 'none')
       return map.queryRenderedFeatures(b, { layers })[0]
     }
     map.on('click', e => {
@@ -204,7 +223,7 @@ export default function MapView(p: Props) {
       if (c.draft) return c.onPoint([+e.lngLat.lng.toFixed(6), +e.lngLat.lat.toFixed(6)])
       const f = pick(e)
       if (!f) return c.onEmpty()
-      if (f.layer.id === 'gaps') c.onGap(String(f.properties.id))
+      if (f.layer.id === 'gaps' || f.layer.id.startsWith('bicons')) c.onGap(String(f.properties.id))
       else if (f.layer.id === 'troutes') c.onRoute(String(f.properties.id))
       else if (f.layer.id === 'blocks') c.onBlock(`Blk ${f.properties.blk} ${f.properties.street}`)
       else if (f.layer.id === 'risk-fill') c.onRisk(String(f.properties.id))
@@ -233,6 +252,17 @@ export default function MapView(p: Props) {
       tip.setLngLat((f.geometry as GeoJSON.Point).coordinates as LngLat).setDOMContent(node).addTo(map)
     })
     map.on('mouseleave', 'dests', () => tip.remove())
+    for (const l of ['bicons-pt']) {
+      map.on('mousemove', l, e => {
+        const f = e.features?.[0]
+        if (!f) return
+        const node = document.createElement('div')
+        node.className = 'tip'
+        node.textContent = String(f.properties.label)
+        tip.setLngLat(e.lngLat).setDOMContent(node).addTo(map)
+      })
+      map.on('mouseleave', l, () => tip.remove())
+    }
     return () => { stop(); document.documentElement.removeEventListener('mouseleave', stop); map.remove() }
   }, [])
 
@@ -247,7 +277,8 @@ export default function MapView(p: Props) {
     const c = MAP_COLORS[p.scheme]
     map.setPaintProperty('bg', 'background-color', c.bg)
     for (const id of ['base-light', 'base-dark']) {
-      map.setPaintProperty(id, 'raster-saturation', focus ? -1 : 0)
+      map.setPaintProperty(id, 'raster-saturation', focus ? -1 : p.town ? -0.4 : 0)
+      map.setPaintProperty(id, 'raster-contrast', p.town && !focus ? -0.25 : 0)
       map.setPaintProperty(id, 'raster-brightness-max', focus ? (p.scheme === 'light' ? 0.72 : 0.6) : 1)
       map.setPaintProperty(id, 'raster-opacity', focus && p.scheme === 'light' ? 0.75 : 1)
     }
@@ -265,6 +296,8 @@ export default function MapView(p: Props) {
     const w = (lo: number, mid: number, high: number, top: number) =>
       ['case', hot, top, ['<', ['get', 'foot'], p50], lo, ['<', ['get', 'foot'], p75], mid, high]
     map.setPaintProperty('risk-fill', 'fill-color', focus ? c.muted : c.risk)
+    map.setPaintProperty('risk-fill', 'fill-opacity', focus ? 0.05 : 0.14)
+    map.setPaintProperty('risk-line', 'line-opacity', focus ? 0.4 : 1)
     map.setPaintProperty('risk-line', 'line-color', focus ? c.muted : c.risk)
     map.setPaintProperty('troutes', 'line-color', focus ? c.muted : ['match', ['get', 'family'], ...Object.entries(c.family).flat(), c.muted] as unknown as ExpressionSpecification)
     map.setPaintProperty('troutes', 'line-opacity', focus ? 0.25 : 0.8)
@@ -278,6 +311,8 @@ export default function MapView(p: Props) {
     map.setPaintProperty('gaps', 'circle-opacity', focus ? 0.35 : 1)
     map.setPaintProperty('highlight-case', 'line-color', c.ring)
     map.setPaintProperty('highlight', 'line-color', c.highlight)
+    map.setPaintProperty('context', 'line-color', c.highlight)
+    map.setPaintProperty('sel-ring', 'line-color', c.highlight)
     map.setPaintProperty('routes', 'line-color', focus ? c.muted : c.route)
     map.setPaintProperty('blocks', 'circle-color', focus ? c.muted : c.block)
     map.setPaintProperty('dests', 'circle-stroke-color', c.dest)
@@ -303,6 +338,48 @@ export default function MapView(p: Props) {
     m.getElement().setAttribute('aria-label', `Route starts at ${h.label}`)
     m.setLngLat(h.from).addTo(map)
   }, [map, p.routeHl])
+  // One icon per gap. Long gaps put theirs halfway along the part in view, recomputed when the map settles,
+  // so it follows the user along the stretch. The selected gap's icon stays put while its detail is open.
+  const locked = useRef<{ id: string; at: LngLat } | null>(null)
+  useEffect(() => {
+    if (!map) return
+    const place = () => {
+      const b = map.getBounds()
+      const box: [number, number, number, number] = [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]
+      const features = p.bicons.flatMap(g => {
+        let at: LngLat | null = g.lines ? visibleMidpoint(g.lines, box) : g.at
+        if (locked.current?.id === g.id) at = locked.current.at
+        else if (g.id === p.selectedGap && at) locked.current = { id: g.id, at }
+        if (!at) return []
+        return [{ type: 'Feature' as const, properties: { id: g.id, barrier: g.barrier, sev: String(Math.min(3, Math.max(1, g.severity))), planned: g.planned, score: g.score, label: g.label }, geometry: { type: 'Point' as const, coordinates: at } }]
+      })
+      set('bicons', { type: 'FeatureCollection', features })
+    }
+    if (locked.current && locked.current.id !== p.selectedGap) locked.current = null
+    place()
+    map.on('moveend', place)
+    return () => { map.off('moveend', place) }
+  }, [map, p.bicons, p.selectedGap])
+  useEffect(() => {
+    if (!map) return
+    // Full colour for the selected gap only; everything else (and planned works) uses the grey badge.
+    const tint = ['case',
+      ['==', ['get', 'id'], p.selectedGap ?? ''], ['get', 'sev'],
+      focus ? true : false, 'g',
+      ['get', 'planned'], 'g',
+      ['get', 'sev']]
+    const img = ['concat', 'b-', ['get', 'barrier'], '-', tint, '-', p.scheme] as unknown as ExpressionSpecification
+    for (const l of ['bicons-pt']) {
+      map.setLayoutProperty(l, 'icon-image', img)
+      map.setPaintProperty(l, 'icon-opacity', ['case', ['get', 'planned'], 0.75, 1] as unknown as ExpressionSpecification)
+      map.setLayoutProperty(l, 'visibility', p.layers.icons && p.town ? 'visible' : 'none')
+    }
+  }, [map, p.scheme, p.selectedGap, focus, p.layers.icons, p.town])
+  useEffect(() => {
+    if (!map) return
+    map.setFilter('context', ['in', ['get', 'id'], ['literal', p.context]] as ExpressionSpecification)
+    set('sel-ring', p.ring ? { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: circle(p.ring, 25) } }] } : null)
+  }, [map, p.context, p.ring])
   // Labelled rings for the highest-risk areas.
   useEffect(() => {
     if (!map) return
@@ -310,15 +387,38 @@ export default function MapView(p: Props) {
       const b = document.createElement('button')
       b.type = 'button'
       b.className = 'risk-label'
-      b.textContent = `High risk ${i + 1}`
+      b.innerHTML = `<span class="full">High risk </span>${i + 1}`
+      b.setAttribute('aria-label', `High risk area ${i + 1}`)
       b.addEventListener('click', e => { e.stopPropagation(); live.current.onRisk(r.id) })
-      return new Marker({ element: b, anchor: 'bottom' }).setLngLat([r.center[0], r.center[1] + r.radiusM / 110540]).addTo(map)
+      return new Marker({ element: b, anchor: 'bottom', offset: [0, -6] }).setLngLat([r.center[0], r.center[1] + r.radiusM / 110540]).addTo(map)
     })
-    return () => ms.forEach(m => m.remove())
+    // Collision: walk in rank order, hide any label that overlaps one already shown.
+    const declutter = () => {
+      const shown: DOMRect[] = []
+      for (const m of ms) {
+        const el = m.getElement()
+        el.style.visibility = ''
+        const r = el.getBoundingClientRect()
+        const hit = shown.some(o => r.left < o.right && r.right > o.left && r.top < o.bottom && r.bottom > o.top)
+        if (hit) el.style.visibility = 'hidden'; else shown.push(r)
+      }
+    }
+    declutter()
+    map.on('moveend', declutter)
+    return () => { map.off('moveend', declutter); ms.forEach(m => m.remove()) }
   }, [map, p.risk])
 
   useEffect(() => { set('subzones', p.subzones) }, [map, p.subzones])
-  useEffect(() => { set('segments', p.segments) }, [map, p.segments])
+  useEffect(() => {
+    set('segments', p.segments)
+    if (!map || !p.segments) return
+    // Drawn = the map went idle, or 3 s passed (slow tiles must not hold the panel on a skeleton).
+    let done = false
+    const fire = () => { if (!done) { done = true; live.current.onDrawn() } }
+    map.once('idle', fire)
+    const t = setTimeout(fire, 3000)
+    return () => { done = true; clearTimeout(t); map.off('idle', fire) }
+  }, [map, p.segments])
   useEffect(() => { set('blocks', p.blocks) }, [map, p.blocks])
   useEffect(() => { set('dests', p.destinations) }, [map, p.destinations])
   useEffect(() => {
@@ -348,21 +448,18 @@ export default function MapView(p: Props) {
   // Numbered markers for the top fixes: real buttons, so they work from the keyboard too.
   useEffect(() => {
     if (!map) return
-    const roots: Root[] = []
     numMarkers.current = p.numbered.map((g, i) => {
       const b = document.createElement('button')
       b.type = 'button'
       b.className = 'gap-marker'
       b.setAttribute('aria-label', `Fix ${i + 1}: ${g.label}`)
-      const root = createRoot(b)
-      root.render(<BarrierBadge barrier={g.barrier} severity={g.severity} rank={i + 1} size={18} />)
-      roots.push(root)
+      // The barrier icon is already on the path; this adds just the rank, tucked above it.
+      b.textContent = String(i + 1)
       b.addEventListener('click', e => { e.stopPropagation(); live.current.onGap(g.id) })
-      return new Marker({ element: b }).setLngLat(g.at).addTo(map)
+      return new Marker({ element: b, anchor: 'bottom-left', offset: [4, -8] }).setLngLat(g.at).addTo(map)
     })
     return () => {
       numMarkers.current.forEach(m => m.remove()); numMarkers.current = []
-      setTimeout(() => roots.forEach(r => r.unmount())) // unmounting inside React's commit phase warns
     }
   }, [map, p.numbered])
 
@@ -389,7 +486,7 @@ export default function MapView(p: Props) {
 
   useEffect(() => {
     if (!map || !p.fly) return
-    const opts = { padding: p.padding, duration: p.reducedMotion ? 0 : 1000, maxZoom: 17.5 }
+    const opts = { padding: p.padding, duration: p.reducedMotion || p.fly.n === 0 ? 0 : 1000, maxZoom: 17.5 }
     if (p.fly.bbox) map.fitBounds(p.fly.bbox, opts)
     else if (p.fly.center) {
       const cam = { center: p.fly.center, zoom: Math.max(map.getZoom(), p.fly.zoom ?? 16.5), padding: p.padding }

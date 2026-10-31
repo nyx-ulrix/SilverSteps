@@ -1,17 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import type React from 'react'
 import type { Map as MLMap } from 'maplibre-gl'
 import type { FeatureCollection, LineString } from 'geojson'
-import { InfoIcon, PathIcon, CaretUpIcon, CaretDownIcon, StackIcon } from '@phosphor-icons/react'
-import MapView, { FAMILY_LABEL, FAMILY_OF, MAP_COLORS, type Family, type FlyTarget, type Layers, type Scheme } from './MapView.tsx'
+import { InfoIcon, PathIcon, CaretUpIcon, CaretDownIcon, StackIcon, UsersIcon, WheelchairIcon, EyeIcon, FunnelIcon } from '@phosphor-icons/react'
+import MapView, { type BarrierIcon, FAMILY_LABEL, FAMILY_OF, MAP_COLORS, type Family, type FlyTarget, type Layers, type Scheme } from './MapView.tsx'
 import { api, ApiError, getJSON } from './api.ts'
+import { BarrierBadge } from './Badge.tsx'
 import {
-  affects, applyCorrections, breaks, distToLine, hotspots, riskAreas, routeAccuracy, sortGaps, type BlockRoute, type Hotspot,
+  affects, applyCorrections, breaks, distToLine, metresBetween, hotspots, riskAreas, routeAccuracy, sortGaps, type BlockRoute, type Hotspot,
   type Feedback, type Gap, type IndexData, type LngLat, type Route, type Seg, type SegInfo, type SortMode, type Verdict, type VisionEntry,
 } from './logic.ts'
 import {
   About, BackButton, CloseButton, DrawPanel, GapDetail, GapList, HotspotDetail, HotspotList, RetryError, RiskDetail, RouteDetail, RouteList, SegmentDetail, Skeleton,
   routeTitle, type Likelihood, type RouteSort,
-  SORT_LABEL, SortControl, TownPicker, fmt, gapPlace, placeName, type SaveState,
+  SORT_LABEL, SortControl, TownPicker, fmt, gapPlace, placeName, short, type SaveState,
 } from './Panels.tsx'
 
 type TownData = { slug: string; segments: FeatureCollection; segs: Map<string, SegInfo>; gaps: Gap[] }
@@ -19,6 +21,18 @@ type Sel = { kind: 'gap' | 'segment' | 'hot' | 'risk' | 'route'; id: string; fro
 type View = 'main' | 'about' | 'draw'
 
 const NONE: never[] = []
+const WHO_OPTS = [['all', 'Everyone', UsersIcon], ['mobility', 'Mobility aid', WheelchairIcon], ['sight', 'Low vision', EyeIcon]] as const
+const WHO_HELP = { mobility: 'Walking frames, wheelchairs, frailty', sight: 'Blind or partially sighted' }
+type ListMode = 'hot' | 'fixes' | 'routes'
+type Who = 'all' | 'mobility' | 'sight'
+// #ang-mo-kio/fixes/mobility: town, list view, who-for filter. Shareable.
+const HASH = decodeURIComponent(location.hash.slice(1)).split('/')
+const MODES: ListMode[] = ['hot', 'fixes', 'routes']
+const WHOS: Who[] = ['all', 'mobility', 'sight']
+// One health check per page load; town data waits on it so a dead /api costs a single failed request.
+// Resolves to null when /api is up, else the error (backup copy or down).
+let health: Promise<unknown> | null = null
+const apiUp = () => (health ??= api.health().then(h => (h.ok ? null : new Error('down')), e => e))
 const SAVE_FAILED = "Corrections can't be saved right now. This change shows on this device only."
 
 function useMedia(q: string) {
@@ -48,7 +62,7 @@ export default function App() {
   const [subzones, setSubzones] = useState<FeatureCollection | null>(null)
   const [topGaps, setTopGaps] = useState<Gap[]>([])
 
-  const [slug, setSlug] = useState<string | null>(() => decodeURIComponent(location.hash.slice(1)) || null)
+  const [slug, setSlug] = useState<string | null>(() => HASH[0] || null)
   const [town, setTown] = useState<TownData | null>(null)
   const [townErr, setTownErr] = useState(false)
   const [townTry, setTownTry] = useState(0)
@@ -64,19 +78,21 @@ export default function App() {
   const [sel, setSel] = useState<Sel>(null)
   const pendingGap = useRef<string | null>(null)
   const [sort, setSort] = useState<SortMode>('impact')
-  const [listMode, setListMode] = useState<'hot' | 'fixes' | 'routes'>('hot')
+  const [listMode, setListMode] = useState<ListMode>(() => (MODES.includes(HASH[1] as ListMode) ? HASH[1] as ListMode : 'hot'))
   // Block-to-place routes: loaded only when the Routes view opens (about 2 MB per town).
   const [townRoutes, setTownRoutes] = useState<BlockRoute[] | null | 'error'>(null)
   const [routeSort, setRouteSort] = useState<RouteSort>('likely')
   const [families, setFamilies] = useState<Set<Family>>(() => new Set(Object.keys(FAMILY_LABEL) as Family[]))
   const [blk, setBlk] = useState('')
-  const [who, setWho] = useState<'all' | 'mobility' | 'sight'>('all')
+  const [segDrawn, setSegDrawn] = useState(false)
+  const [whoOpen, setWhoOpen] = useState(false)
+  const [who, setWho] = useState<Who>(() => (WHOS.includes(HASH[2] as Who) ? HASH[2] as Who : 'all'))
   const [view, setView] = useState<View>('main')
   const [draft, setDraft] = useState<LngLat[]>([])
   const [dest, setDest] = useState('')
   const [savingRoute, setSavingRoute] = useState(false)
   const [routeMsg, setRouteMsg] = useState<string | null>(null)
-  const [layers, setLayers] = useState<Layers>({ footfall: true, barriers: false, blocks: false, destinations: false, routes: false, risk: true })
+  const [layers, setLayers] = useState<Layers>({ footfall: true, barriers: false, blocks: false, destinations: false, routes: false, risk: true, icons: true })
   const [sheetOpen, setSheetOpen] = useState(() => !(matchMedia('(max-width: 767px)').matches && location.hash.length > 1))
   const [fly, setFly] = useState<FlyTarget | null>(null)
   const mapRef = useRef<MLMap | null>(null)
@@ -95,8 +111,11 @@ export default function App() {
   const noteApiFailure = useCallback((e: unknown) => setSaveState(e instanceof ApiError && e.backup ? 'backup' : 'down'), [])
 
   useEffect(() => {
-    api.health().then(h => setSaveState(h.ok ? 'ok' : 'down'), noteApiFailure)
+    apiUp().then(err => (err ? noteApiFailure(err) : setSaveState('ok')))
   }, [noteApiFailure])
+  useEffect(() => {
+    history.replaceState(null, '', slug ? `#${slug}/${listMode}/${who}` : location.pathname + location.search)
+  }, [slug, listMode, who])
 
   useEffect(() => {
     setIndexErr(false)
@@ -106,13 +125,13 @@ export default function App() {
   }, [indexTry])
 
   const summary = index?.towns.find(t => t.slug === slug) ?? null
+  const firstFrame = useRef(!!HASH[0])
   // Opened with #town in the URL: frame that town once the index arrives.
   useEffect(() => { if (summary && !fly) setFly({ bbox: summary.bbox, n: 0 }) }, [index])
 
   // Lazy-load only the selected town's files.
   useEffect(() => {
-    history.replaceState(null, '', slug ? `#${slug}` : location.pathname + location.search)
-    setTown(null); setBlocks(null); setDests(null); setFeedback([]); setRoutes([]); setVision(undefined); setTownRoutes(null); setBlk(''); setTownErr(false); setSaveError(null)
+    setTown(null); setBlocks(null); setDests(null); setFeedback([]); setRoutes([]); setVision(undefined); setTownRoutes(null); setBlk(''); setSegDrawn(false); setTownErr(false); setSaveError(null)
     if (!slug) return
     let live = true
     const base = `/data/towns/${slug}`
@@ -124,6 +143,14 @@ export default function App() {
         segs.set(f.properties.id, { ...f.properties, coords, mid: coords[Math.floor(coords.length / 2)] })
       }
       setTown({ slug, segments: fc, segs, gaps })
+      if (firstFrame.current) {
+        firstFrame.current = false
+        // Frame the busier half of the paths (median from the data itself; the index may not have arrived yet).
+        const feet = [...segs.values()].map(x => x.foot).sort((a, b) => a - b)
+        const p50 = feet[Math.floor(feet.length / 2)] ?? 0
+        const busy = [...segs.values()].filter(x => x.foot >= p50).flatMap(x => x.coords)
+        if (busy.length) setFly({ bbox: bboxOf(busy), n: 0 })
+      }
       const pg = pendingGap.current
       pendingGap.current = null
       const g = pg && gaps.find(x => x.id === pg)
@@ -131,14 +158,17 @@ export default function App() {
     }, () => live && setTownErr(true))
     getJSON<FeatureCollection>(`${base}/blocks.json`).then(d => live && setBlocks(d), () => {})
     getJSON<FeatureCollection>(`${base}/destinations.json`).then(d => live && setDests(d), () => {})
-    api.feedback(slug).then(d => live && setFeedback(d), noteApiFailure)
-    api.routes(slug).then(d => live && setRoutes(d), noteApiFailure)
+    apiUp().then(err => {
+      if (err || !live) return
+      api.feedback(slug).then(d => live && setFeedback(d), noteApiFailure)
+      api.routes(slug).then(d => live && setRoutes(d), noteApiFailure)
+    })
     return () => { live = false }
   }, [slug, townTry])
 
   const padding = mobile
     // The sheet sits at its peek while browsing, and at half height while something is selected.
-    ? { top: 80, right: 40, bottom: sheetOpen ? Math.round(innerHeight * 0.5) + 32 : 140, left: 40 }
+    ? { top: 64, right: 16, bottom: sheetOpen ? Math.round(innerHeight * 0.5) + 24 : 124, left: 16 }
     : { top: 80, right: 80, bottom: 80, left: 496 }
 
   const pickTown = (s: string) => {
@@ -228,6 +258,28 @@ export default function App() {
   const risks = useMemo(() => riskAreas(slug ? visibleGaps : rankedTop), [slug, visibleGaps, rankedTop])
   const townNames = useMemo(() => Object.fromEntries((index?.towns ?? []).map(t => [t.slug, t.name])), [index])
 
+  // Node -> segments, for walking the connected busy path around a short gap.
+  const byNode = useMemo(() => {
+    const m = new Map<string, string[]>()
+    for (const sg of town?.segs.values() ?? []) for (const n of sg.id.split('-').slice(0, 2)) { if (!m.has(n)) m.set(n, []); m.get(n)!.push(sg.id) }
+    return m
+  }, [town])
+  /** For gaps under 40 m: the connected footP50+ path within 150 m, so a 7 m stair reads in place. */
+  const contextOf = useCallback((g: Gap): string[] => {
+    if (!town || !footP || g.len >= 40) return NONE
+    const seen = new Set(g.segs), queue = [...g.segs], out: string[] = []
+    while (queue.length) {
+      const id = queue.pop()!
+      for (const n of id.split('-').slice(0, 2)) for (const nb of byNode.get(n) ?? []) {
+        if (seen.has(nb)) continue
+        seen.add(nb)
+        const sg = town.segs.get(nb)!
+        if (sg.foot < footP[0] || metresBetween(sg.mid, g.at) > 150) continue
+        out.push(nb); queue.push(nb)
+      }
+    }
+    return out
+  }, [town, footP, byNode])
   const pickGap = (g: Gap) => {
     if (g.town !== slug) {
       pendingGap.current = g.id
@@ -236,7 +288,7 @@ export default function App() {
     }
     const segs = town?.segs
     if (mobile) setSheetOpen(true)
-    select({ kind: 'gap', id: g.id }, segs ? g.segs.flatMap(s => segs.get(s)?.coords ?? []) : [g.at])
+    select({ kind: 'gap', id: g.id }, segs ? [...g.segs, ...contextOf(g)].flatMap(s => segs.get(s)?.coords ?? []) : [g.at])
   }
   const pickHot = (h: Hotspot) => {
     if (mobile) setSheetOpen(true)
@@ -296,6 +348,14 @@ export default function App() {
   const selHot = sel?.kind === 'hot' ? hot.find(h => h.id === sel.id) ?? null : null
   const selRisk = sel?.kind === 'risk' ? risks.find(r => r.id === sel.id) ?? null : null
   const selRoute = sel?.kind === 'route' ? routeList.find(r => String(r.id) === sel.id) ?? null : null
+  // Barrier icons on the paths: every visible (filtered, corrected) gap; long ones repeat along their segments.
+  const bicons = useMemo<BarrierIcon[]>(() => (!town || !index ? NONE : visibleGaps.map(g => ({
+    id: g.id, barrier: g.barrier, severity: g.severity, planned: !!g.planned, score: g.foot * g.severity,
+    label: `${g.label}, ${gapPlace(g)}`, at: g.at,
+    lines: g.len > 150 ? g.segs.map(x => town.segs.get(x)?.coords).filter((c): c is LngLat[] => !!c) : null,
+  }))), [town, index, visibleGaps])
+  const present = useMemo(() => [...new Set(visibleGaps.map(g => g.barrier))], [visibleGaps])
+  const selContext = useMemo(() => (selGap ? contextOf(selGap) : NONE), [selGap, contextOf])
   const routeHl = useMemo(() => (selRoute ? { coords: selRoute.coords, from: selRoute.coords[0], label: selRoute.blk } : null), [selRoute])
   // Stable array so the map only re-filters (and pulses) when the selection really changes.
   const highlight = useMemo(() => (selGap ? selGap.segs : selSeg ? [selSeg.id] : selHot ? selHot.segs : selRisk ? selRisk.gaps.flatMap(g => g.segs) : NONE), [selGap, selSeg, selHot, selRisk])
@@ -311,7 +371,7 @@ export default function App() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || (e.target as HTMLElement).closest?.('select, textarea, input')) return
-      setSel(null)
+      setSel(null); setWhoOpen(false)
       setView(v => (v === 'about' ? 'main' : v))
     }
     addEventListener('keydown', onKey)
@@ -320,19 +380,50 @@ export default function App() {
 
   const fixesShown = view === 'main' && (!slug || listMode === 'fixes')
   const numbered = useMemo(
-    () => (fixesShown ? (slug ? ranked : rankedTop).slice(0, 10).map(g => ({ id: g.id, at: g.at, label: `${g.label}, ${gapPlace(g)}`, barrier: g.barrier, severity: g.severity })) : []),
+    () => (fixesShown ? (slug ? ranked : rankedTop).filter(g => !g.planned).slice(0, 10).map(g => ({ id: g.id, at: g.at, label: `${g.label}, ${gapPlace(g)}`, barrier: g.barrier, severity: g.severity })) : []),
     [fixesShown, slug, ranked, rankedTop])
-  const picker = index && <>
-    <TownPicker towns={index.towns} value={slug} onChange={s => (s ? pickTown(s) : allTowns())} />
-    <div className="who">
-      <span id="who-l">Who for</span>
-      <div className="switch switch-3" role="group" aria-labelledby="who-l">
-        {([['all', 'Everyone'], ['mobility', 'Walking frame'], ['sight', 'Low vision']] as const).map(([k, l]) => (
-          <button key={k} type="button" aria-pressed={who === k} onClick={() => setWho(k)}>{l}</button>
+  const pills = (
+    <>
+      <div className="filter-pills" role="group" aria-labelledby="who-l">
+        {WHO_OPTS.map(([k, l, I]) => (
+          <button key={k} type="button" className="filter-pill" aria-pressed={who === k} onClick={() => { setWho(k); setWhoOpen(false) }}><I aria-hidden size={18} />{l}</button>
         ))}
       </div>
+      {who !== 'all' && <p className="help">{WHO_HELP[who]}</p>}
+    </>
+  )
+  const picker = index && (mobile ? (
+    // Phones: town and filter share one row; the three pills live in a small popover.
+    <div className="picker-row">
+      <TownPicker towns={index.towns} value={slug} onChange={s => (s ? pickTown(s) : allTowns())} />
+      <div className="who-pop">
+        <span id="who-l" className="sr-only">Show barriers for</span>
+        <button type="button" className="filter-btn" aria-expanded={whoOpen} aria-haspopup="true" onClick={() => setWhoOpen(o => !o)}>
+          <FunnelIcon aria-hidden size={18} />{WHO_OPTS.find(o => o[0] === who)![1]}<CaretDownIcon aria-hidden size={16} />
+        </button>
+        {whoOpen && <div className="popover">{pills}</div>}
+      </div>
     </div>
-  </>
+  ) : <>
+    <TownPicker towns={index.towns} value={slug} onChange={s => (s ? pickTown(s) : allTowns())} />
+    <div className="who">
+      <span id="who-l">Show barriers for</span>
+      {pills}
+    </div>
+  </>)
+
+  const onListKey = (e: React.KeyboardEvent) => {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+    const rows = [...(panelRef.current?.querySelectorAll<HTMLButtonElement>('.list.gaps > li > .row') ?? [])]
+    const i = rows.indexOf(e.target as HTMLButtonElement)
+    if (i < 0) return
+    e.preventDefault()
+    rows[Math.max(0, Math.min(rows.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))].focus()
+  }
+  const onListFocus = (e: React.FocusEvent) => {
+    const at = (e.target as HTMLElement).dataset?.at
+    if (at && e.target.matches(':focus-visible')) setFly({ center: at.split(',').map(Number) as LngLat, zoom: 15, n: Date.now() })
+  }
 
   /* ---------- panel body ---------- */
   let body: ReactNode
@@ -374,7 +465,7 @@ export default function App() {
   } else if (townErr) {
     body = <div className="stack">{picker}
       <RetryError onRetry={() => setTownTry(n => n + 1)}>This town's data could not be loaded. It may still be processing.</RetryError></div>
-  } else if (!town || !corrected) {
+  } else if (!town || !corrected || !segDrawn) {
     body = <div className="stack">{picker}<Skeleton /></div>
   } else if (selRoute) {
     // A route barrier links to a fix when a gap with that barrier sits on the route.
@@ -459,6 +550,10 @@ export default function App() {
     )
   }
 
+  const topItem: { text: string; open: () => void } | null = sel || view !== 'main' || !slug ? null
+    : listMode === 'fixes' && ranked[0] ? { text: `Top fix: ${ranked[0].label}, ${gapPlace(ranked[0]).replace(/^Near/, 'near')}, ~${short(ranked[0].foot)} trips/wk`, open: () => pickGap(ranked[0]) }
+      : listMode === 'hot' && hot[0] ? { text: `Busiest: ${hotTitle(hot[0]).replace(/^Near /, '')}, ~${short(hot[0].foot)} trips/wk`, open: () => pickHot(hot[0]) }
+        : listMode === 'routes' && filteredRoutes[0] ? { text: `Top route: ${routeTitle(filteredRoutes[0])}`, open: () => pickRoute(filteredRoutes[0]) } : null
   const peekTitle = selRoute ? routeTitle(selRoute) : selRisk ? `High risk area ${risks.indexOf(selRisk) + 1}` : selHot ? hotTitle(selHot) : view === 'draw' ? `Draw my route: ${draft.length} points` : selGap ? `${selGap.label}, ${gapPlace(selGap).replace(/^Near/, 'near')}` : selSeg ? placeName(selSeg.name) : summary?.name ?? 'Singapore'
 
   return (
@@ -472,12 +567,13 @@ export default function App() {
         routesMode={!!slug && view === 'main' && listMode === 'routes'}
         troutes={mapRoutes}
         routeHl={routeHl}
+        context={selContext} bicons={bicons} selectedGap={selGap?.id ?? null} ring={selGap && selGap.len < 40 ? selGap.at : null}
         onRisk={pickRisk} onRoute={id => { const r = routeList.find(x => String(x.id) === id); if (r) pickRoute(r) }}
         onBlock={b => { setBlk(b); if (mobile) setSheetOpen(true) }}
         blocks={blocks} destinations={dests} destLabels={Object.fromEntries(Object.entries(index?.destTypes ?? {}).map(([k, d]) => [k, d.label]))}
         routes={routes} draft={view === 'draw' ? draft : null} highlight={highlight} layers={layers} fly={fly}
         onTown={pickTown} onGap={id => { const g = corrected?.gaps.find(x => x.id === id) ?? topGaps.find(x => x.id === id); if (g) pickGap(g) }}
-        onSegment={id => pickSegment(id)} onEmpty={() => setSel(null)} onRightDrag={rightDragged} onPoint={addPoint} onMapReady={m => { mapRef.current = m }}
+        onSegment={id => pickSegment(id)} onEmpty={() => setSel(null)} onRightDrag={rightDragged} onPoint={addPoint} onMapReady={m => { mapRef.current = m }} onDrawn={() => setSegDrawn(true)}
       />
       {view === 'draw' && <div className="crosshair" aria-hidden />}
       {panHint && <p className="pan-hint">Right-drag to move the map</p>}
@@ -492,16 +588,18 @@ export default function App() {
           )}
           <div className="brand">
             <h1>SilverSteps</h1>
-            <p className="tagline">{mobile && !sheetOpen ? peekTitle : 'Where older residents walk most, and what to fix first. Modelled estimates.'}</p>
+            {mobile && !sheetOpen && topItem
+              ? <button type="button" className="peek-btn" onClick={() => { setSheetOpen(true); topItem.open() }}>{topItem.text}</button>
+              : <p className="tagline">{mobile && !sheetOpen ? peekTitle : 'Where older residents walk most, and what to fix first. Modelled estimates.'}</p>}
           </div>
           <button type="button" className="btn-link how" onClick={() => { setView(v => (v === 'about' ? 'main' : 'about')); setSheetOpen(true) }} aria-pressed={view === 'about'}>
             <InfoIcon aria-hidden size={20} /><span className="label">How this works</span>
           </button>
         </header>
-        <div className="panel-body" ref={panelRef}>{body}</div>
+        <div className="panel-body" ref={panelRef} onKeyDown={onListKey} onFocus={onListFocus}>{body}</div>
       </aside>
 
-      <MapKey layers={layers} setLayers={setLayers} scheme={scheme} town={!!slug} footBreaks={footBreaks} subzoneBreaks={subzoneBreaks} routesMode={!!slug && listMode === 'routes'} />
+      <MapKey layers={layers} setLayers={setLayers} scheme={scheme} town={!!slug} present={present} labels={index?.barriers} footBreaks={footBreaks} subzoneBreaks={subzoneBreaks} routesMode={!!slug && listMode === 'routes'} />
     </div>
   )
 }
@@ -511,9 +609,9 @@ function rangeLabels(br: number[]) {
   return [`Under ${fmt(br[0])}`, ...br.slice(0, -1).map((b, i) => `${fmt(b)} to ${fmt(br[i + 1])}`), `${fmt(br.at(-1)!)} or more`]
 }
 
-function MapKey({ layers, setLayers, scheme, town, footBreaks, subzoneBreaks, routesMode }: {
+function MapKey({ layers, setLayers, scheme, town, footBreaks, subzoneBreaks, routesMode, present, labels }: {
   layers: Layers; setLayers: (f: (l: Layers) => Layers) => void; scheme: Scheme; town: boolean
-  footBreaks: number[]; subzoneBreaks: number[]; routesMode: boolean
+  footBreaks: number[]; subzoneBreaks: number[]; routesMode: boolean; present: string[]; labels?: IndexData['barriers']
 }) {
   const c = MAP_COLORS[scheme]
   const ramp = (title: string, br: number[]) => (
@@ -541,7 +639,13 @@ function MapKey({ layers, setLayers, scheme, town, footBreaks, subzoneBreaks, ro
               {toggle('footfall', 'Senior footfall', { background: `linear-gradient(90deg, ${c.ramp.join(',')})` })}
               {layers.footfall && footBreaks.length > 0 && ramp('Estimated senior trips per week (modelled)', footBreaks)}
               {toggle('risk', 'High risk areas', { background: `${c.risk}33`, border: `2px dashed ${c.risk}`, borderRadius: '50%' })}
-              {toggle('barriers', 'Barriers (larger is more severe)', { background: c.barrier, borderRadius: '50%' })}
+              {toggle('icons', 'Barrier icons', { background: 'var(--sev3-bg)', border: '2px solid var(--sev3-fg)', borderRadius: '50%' })}
+              {layers.icons && labels && present.length > 0 && (
+                <ul className="icon-legend">
+                  {present.map(b => <li key={b}><BarrierBadge barrier={b} severity={labels[b]?.severity ?? 1} size={16} />{labels[b]?.label ?? b}</li>)}
+                  <li className="muted">Tint shows severity. Grey means already planned.</li>
+                </ul>
+              )}
               {routesMode && (
                 <div className="ramp">
                   <p className="ramp-title">Routes from HDB blocks, by place (wider is more trips)</p>

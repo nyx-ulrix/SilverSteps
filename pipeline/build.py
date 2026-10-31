@@ -64,13 +64,13 @@ ROADS = {"residential", "service", "tertiary", "secondary", "primary", "unclassi
 
 # Barrier: (label, severity 1-3, fix, effort)
 BARRIERS = {
-    "steps": ("Steps with no ramp recorded", 3, "Ramp or lift", "high"),
+    "steps": ("Steps with no ramp recorded", 3, "Barrier-free ramp (or lift)", "high"),
     "crossing": ("Crossing without signals", 2, "Signalised or zebra crossing", "medium"),
     "kerb": ("Raised kerb", 2, "Kerb ramp", "low"),
     "no_shelter": ("No shelter", 1, "Covered linkway", "high"),
-    "rest_gap": ("No seat for over 200 m", 1, "Bench", "low"),
-    "surface": ("Rough surface", 1, "Resurface path", "medium"),
-    "dark": ("Unlit at night", 1, "Path lighting", "medium"),
+    "rest_gap": ("No seat for over 200 m", 1, "Seat with backrest and armrests (rest point)", "low"),
+    "surface": ("Rough surface", 1, "Resurface with non-slip finish", "medium"),
+    "dark": ("Unlit at night", 1, "Non-glare path lighting", "medium"),
     "slope": ("Slope", 1, "Handrail or regrade", "medium"),
     "obstruction": ("Path partly blocked", 2, "Clear or move obstruction", "low"),
     "no_tactile": ("Crossing without tactile paving", 2, "Tactile paving", "low"),
@@ -81,6 +81,18 @@ PROFILES = {"steps": ["mobility", "sight"], "crossing": ["mobility", "sight"], "
             "no_shelter": ["mobility"], "rest_gap": ["mobility"], "surface": ["mobility", "sight"],
             "dark": ["sight"], "slope": ["mobility"], "obstruction": ["mobility", "sight"],
             "no_tactile": ["sight"], "silent_signal": ["sight"]}
+# Likely owner of each fix. Our inference: the HDB Town Design Guides only credit LTA for crossing works (AMK p30).
+OWNERS = {"crossing": "LTA", "silent_signal": "LTA", "no_tactile": "LTA", "kerb": "LTA or Town Council"}
+DEFAULT_OWNER = "Town Council or HDB"
+
+
+def norm_street(s):
+    s = re.sub(r"^(near )?blk \S+ ", "", (s or "").lower())
+    return s.replace("avenue", "ave").replace("street", "st").replace("road", "rd").strip()
+
+
+# Works the HDB Town Design Guides already plan or have built (pipeline/raw/planned_works.json).
+PLANNED = json.loads((Path(__file__).resolve().parent / "raw" / "planned_works.json").read_text(encoding="utf8"))
 VISION_MIN_CONF = 0.6  # street-image findings below this stay "needs a field check"
 # Attributes OSM usually does not record: shown as "needs field check", never as barriers.
 UNKNOWN = {"shelter": "Shelter not recorded", "lit": "Lighting not recorded",
@@ -551,7 +563,12 @@ def build_town(town, nat):
                          "segs": g["segs"], "at": g["at"], "town": slug,
                          "source": "Street View photo checked by Claude" if g.get("seen")
                          else "OpenStreetMap benches and bus stops (often incomplete)" if bt == "rest_gap"
-                         else "OpenStreetMap tags"})
+                         else "OpenStreetMap tags",
+                         "owner": OWNERS.get(bt, DEFAULT_OWNER),
+                         "planned": next(({"note": p["note"], "source": p["source"]} for p in PLANNED
+                                          if p["town"] == slug and bt in p["barriers"]
+                                          and {norm_street(g["name"]), norm_street(near)} & {norm_street(s) for s in p["streets"]}),
+                                         None)})
     gap_list.sort(key=lambda g: g["foot"] * g["severity"], reverse=True)
     sv_p = CACHE / "svrefs" / f"{slug}.json"  # Street View references from streetview_refs.py
     if sv_p.exists():
@@ -668,11 +685,16 @@ def cache_from_extract(nat, towns):
             if first(d.get("highway")) in NOT_WALKABLE or first(d.get("foot")) == "no"
             or (first(d.get("access")) in ("private", "no") and first(d.get("foot")) not in ("yes", "designated"))]
     G.remove_edges_from(drop)
+    # Spatial index over all nodes: picking a town's nodes takes seconds instead of
+    # truncate_graph_polygon's full scan of Singapore per town.
+    node_pts = gpd.GeoSeries.from_xy([d["x"] for _, d in G.nodes(data=True)], [d["y"] for _, d in G.nodes(data=True)],
+                                     crs=4326)
+    node_ids = list(G.nodes)
     for town in need_graph:
         slug = slugify(town)
         area = unary_union([s["geom"] for s in nat["subzones"] if s["town"] == town])
         route_buf = to_ll(to_m(area).buffer(CUTOFF_M * 2))
-        sub = ox.truncate.truncate_graph_polygon(G, route_buf)
+        sub = G.subgraph([node_ids[i] for i in node_pts.sindex.query(route_buf, predicate="intersects")]).copy()
         sub = ox.truncate.largest_component(ox.simplify_graph(sub))
         ox.save_graphml(sub, CACHE / "towns" / f"{slug}.g{GRAPH_VERSION}.graphml")
         print(f"  {town}: {len(sub)} nodes", flush=True)

@@ -1,0 +1,18 @@
+[
+  {"town": "ang-mo-kio", "streets": ["Ang Mo Kio Ave 6"], "barriers": ["no_shelter", "rest_gap", "surface"],
+   "note": "North-South Corridor: wider footpaths with play and rest areas", "source": "HDB Ang Mo Kio Town Design Guide p24-28"},
+  {"town": "ang-mo-kio", "streets": ["Ang Mo Kio Ave 8"], "barriers": ["no_shelter", "rest_gap"],
+   "note": "Ave 8 Linear Park and sheltered verandah between blocks", "source": "HDB Ang Mo Kio Town Design Guide p29, p44"},
+  {"town": "ang-mo-kio", "streets": ["Ang Mo Kio St 31"], "barriers": ["crossing", "kerb", "silent_signal", "no_tactile"],
+   "note": "LTA Friendly Streets: raised zebra crossings, longer green-man time, traffic calming", "source": "HDB Ang Mo Kio Town Design Guide p30"},
+  {"town": "ang-mo-kio", "streets": ["Ang Mo Kio Ave 9"], "barriers": ["no_shelter", "rest_gap"],
+   "note": "Community Greenway in AMK North", "source": "HDB Ang Mo Kio Town Design Guide p58"},
+  {"town": "bedok", "streets": ["Bedok North Ave 1", "Bedok South Ave 1"], "barriers": ["rest_gap", "no_shelter"],
+   "note": "Outdoor Play Corridor with rest nodes (completed 2018)", "source": "HDB Bedok Town Design Guide p22, p25"},
+  {"town": "pasir-ris", "streets": ["Pasir Ris Dr 1", "Pasir Ris Dr 3"], "barriers": ["rest_gap"],
+   "note": "NParks pocket parks as rest points", "source": "HDB Pasir Ris Town Design Guide p27"},
+  {"town": "tampines", "streets": ["Tampines Ave 3"], "barriers": ["rest_gap", "no_shelter"],
+   "note": "Social linkway to Tampines Central Park with rest points", "source": "HDB Tampines Town Design Guide p61-62"},
+  {"town": "yishun", "streets": ["Yishun Ring Rd"], "barriers": ["crossing", "kerb", "silent_signal", "no_tactile"],
+   "note": "Silver Zone along Yishun Ring Road", "source": "HDB Yishun Town Design Guide p22"}
+]
