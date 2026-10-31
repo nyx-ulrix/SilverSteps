@@ -198,3 +198,31 @@ export function breaks(values: number[], qs: number[]): number[] {
   }
   return out
 }
+
+export type Hotspot = { id: string; segs: string[]; foot: number; len: number; name: string | null; at: LngLat }
+
+/**
+ * Busiest stretches: segments with foot >= p75, joined when they touch (share an OSM node, from the
+ * "u-v-k" id) and carry the same street name (or the same way when unnamed). Ranked by their busiest segment.
+ */
+export function hotspots(segs: Iterable<SegInfo>, p75: number, n = 10): Hotspot[] {
+  const busy = [...segs].filter(s => s.foot >= p75)
+  const parent = new Map<string, string>(busy.map(s => [s.id, s.id]))
+  const find = (x: string): string => { while (parent.get(x) !== x) { const p = parent.get(parent.get(x)!)!; parent.set(x, p); x = p } return x }
+  const byNode = new Map<string, string>()
+  for (const s of busy) {
+    const key = s.name ?? `w${s.way}`
+    for (const node of s.id.split('-').slice(0, 2)) {
+      const k = `${key}|${node}`
+      const other = byNode.get(k)
+      if (other) parent.set(find(s.id), find(other)); else byNode.set(k, s.id)
+    }
+  }
+  const groups = new Map<string, SegInfo[]>()
+  for (const s of busy) { const r = find(s.id); if (!groups.has(r)) groups.set(r, []); groups.get(r)!.push(s) }
+  return [...groups.values()].map(list => {
+    let top = list[0]
+    for (const s of list) if (s.foot > top.foot) top = s
+    return { id: `hot:${top.id}`, segs: list.map(s => s.id), foot: top.foot, len: list.reduce((a, s) => a + s.len, 0), name: top.name, at: top.mid }
+  }).sort((a, b) => b.foot - a.foot).slice(0, n)
+}

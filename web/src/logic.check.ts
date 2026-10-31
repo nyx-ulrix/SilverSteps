@@ -32,3 +32,11 @@ assert.deepEqual(r.barriers.get('c'), ['kerb'])
 assert.equal(routeAccuracy([{ town: 't', destination_type: null, coords: [[103.8021, 1.3701], [103.8029, 1.3701]], created: '' }], segs.values(), 500)!.share, 1)
 assert.equal(routeAccuracy([{ town: 't', destination_type: null, coords: [[103.9, 1.4], [103.901, 1.4]], created: '' }], segs.values(), 500)!.share, 0)
 console.log('logic ok')
+// hotspots: a (1-2) and b (2-3) share node 2 on way 1 and merge; c (way 2) stays separate; below p75 is dropped
+{
+  const hs = (await import('./logic.ts')).hotspots
+  const S = (id: string, way: number, foot: number): SegInfo => ({ ...seg(id, way, foot, [], 0), id })
+  const h = hs([S('1-2-0', 1, 500), S('2-3-0', 1, 400), S('7-8-0', 2, 900), S('8-9-0', 3, 10)], 300)
+  assert.deepEqual(h.map(x => [x.segs.length, x.foot]), [[1, 900], [2, 500]])
+  console.log('hotspots ok')
+}

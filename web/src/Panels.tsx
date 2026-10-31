@@ -1,9 +1,9 @@
 import { useState, type ReactNode } from 'react'
 import {
-  ArrowLeftIcon, CameraIcon, CheckIcon, XIcon, PlusIcon, ArrowCounterClockwiseIcon, TrashIcon, CrosshairIcon,
+  ArrowLeftIcon, CameraIcon, CheckIcon, FireIcon, XIcon, PlusIcon, ArrowCounterClockwiseIcon, TrashIcon, CrosshairIcon,
   UsersThreeIcon, WarningIcon, ArrowClockwiseIcon,
 } from '@phosphor-icons/react'
-import type { Gap, IndexData, SegInfo, SortMode, TownSummary, Verdict, Effort, VisionEntry } from './logic.ts'
+import type { Gap, Hotspot, IndexData, SegInfo, SortMode, TownSummary, Verdict, Effort, VisionEntry } from './logic.ts'
 
 export const fmt = (n: number) => Math.round(n).toLocaleString('en-SG')
 export const metres = (m: number) => (m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${fmt(m)} m`)
@@ -120,6 +120,57 @@ export function GapList({ gaps, townNames, onPick }: { gaps: Gap[]; townNames?: 
   )
 }
 
+/* ---------- Hotspots ---------- */
+
+export function HotspotList({ spots, title, onPick }: { spots: Hotspot[]; title: (h: Hotspot) => string; onPick: (h: Hotspot) => void }) {
+  if (!spots.length) return <p className="empty">No busy stretches found in this town's data.</p>
+  return (
+    <ol className="list gaps" aria-label="Busiest stretches">
+      {spots.slice(0, 8).map((h, i) => (
+        <li key={h.id}>
+          <button type="button" className="row gap-row" onClick={() => onPick(h)}>
+            <span className="rank">{i + 1}</span>
+            <span className="gap-body">
+              <span className="row-title">{title(h)}</span>
+              <span className="row-meta">About {fmt(h.foot)} senior trips a week</span>
+            </span>
+          </button>
+        </li>
+      ))}
+    </ol>
+  )
+}
+
+export function HotspotDetail({ spot, title, rank, fixes, onGap }: {
+  spot: Hotspot; title: string; rank: number; fixes: Gap[]; onGap: (g: Gap) => void
+}) {
+  return (
+    <div className="stack">
+      <div>
+        <h2>{title}</h2>
+        <p className="sub">Busy stretch {rank}, {metres(spot.len)} long</p>
+      </div>
+      <Trips n={spot.foot} />
+      <p className="muted">On the busiest part. One of the busiest quarter of paths in this town (modelled).</p>
+      <section className="stack-sm" aria-labelledby="hot-fixes">
+        <h3 id="hot-fixes">Barriers on this stretch</h3>
+        {fixes.length ? (
+          <ul className="list">
+            {fixes.map(g => (
+              <li key={g.id}>
+                <button type="button" className="row" onClick={() => onGap(g)}>
+                  <span className="row-title">{g.label}</span>
+                  <span className="row-meta">{g.fix}. {EFFORT[g.effort]}.</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        ) : <p className="muted">None recorded in the map data.</p>}
+      </section>
+    </div>
+  )
+}
+
 /* ---------- Shared detail parts ---------- */
 
 function Trips({ n }: { n: number }) {
@@ -218,8 +269,8 @@ function PhotoCheck({ entry, minConf }: { entry: VisionEntry | null | undefined;
 
 /* ---------- Gap detail ---------- */
 
-export function GapDetail({ gap, removed, rank, total, sortLabel, verdict, segs, index, onVerdict, onMissed, onSegment, saveState, saveError }: {
-  gap: Gap; removed: boolean; rank: number; total: number; sortLabel: string; verdict: Verdict | undefined
+export function GapDetail({ gap, onHotspot, removed, rank, total, sortLabel, verdict, segs, index, onVerdict, onMissed, onSegment, saveState, saveError }: {
+  gap: Gap; onHotspot: boolean; removed: boolean; rank: number; total: number; sortLabel: string; verdict: Verdict | undefined
   segs: SegInfo[]; index: IndexData; onVerdict: (v: 'correct' | 'wrong') => void; onMissed: (b: string, note: string) => void
   onSegment: (id: string) => void; saveState: SaveState; saveError: string | null
 }) {
@@ -229,6 +280,7 @@ export function GapDetail({ gap, removed, rank, total, sortLabel, verdict, segs,
       <div>
         <h2>{gap.label}</h2>
         <p className="sub">{gapPlace(gap)}</p>
+        {onHotspot && <span className="tag"><FireIcon aria-hidden size={16} />On a hotspot</span>}
       </div>
       {removed && <Notice>Residents marked this barrier as wrong, so it is no longer in the priority list.</Notice>}
       <Trips n={gap.foot} />

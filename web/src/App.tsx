@@ -5,16 +5,16 @@ import { InfoIcon, PathIcon, CaretUpIcon, CaretDownIcon, StackIcon } from '@phos
 import MapView, { MAP_COLORS, type FlyTarget, type Layers, type Scheme } from './MapView.tsx'
 import { api, ApiError, getJSON } from './api.ts'
 import {
-  applyCorrections, breaks, routeAccuracy, sortGaps,
+  applyCorrections, breaks, hotspots, routeAccuracy, sortGaps, type Hotspot,
   type Feedback, type Gap, type IndexData, type LngLat, type Route, type Seg, type SegInfo, type SortMode, type Verdict, type VisionEntry,
 } from './logic.ts'
 import {
-  About, BackButton, CloseButton, DrawPanel, GapDetail, GapList, RetryError, SegmentDetail, Skeleton,
+  About, BackButton, CloseButton, DrawPanel, GapDetail, GapList, HotspotDetail, HotspotList, RetryError, SegmentDetail, Skeleton,
   SORT_LABEL, SortControl, TownPicker, fmt, gapPlace, placeName, type SaveState,
 } from './Panels.tsx'
 
 type TownData = { slug: string; segments: FeatureCollection; segs: Map<string, SegInfo>; gaps: Gap[] }
-type Sel = { kind: 'gap' | 'segment'; id: string; from?: Sel } | null
+type Sel = { kind: 'gap' | 'segment' | 'hot'; id: string; from?: Sel } | null
 type View = 'main' | 'about' | 'draw'
 
 const SAVE_FAILED = "Corrections can't be saved right now. This change shows on this device only."
@@ -62,6 +62,7 @@ export default function App() {
   const [sel, setSel] = useState<Sel>(null)
   const pendingGap = useRef<string | null>(null)
   const [sort, setSort] = useState<SortMode>('impact')
+  const [listMode, setListMode] = useState<'hot' | 'fixes'>('hot')
   const [view, setView] = useState<View>('main')
   const [draft, setDraft] = useState<LngLat[]>([])
   const [dest, setDest] = useState('')
@@ -159,6 +160,37 @@ export default function App() {
   const footBreaks = useMemo(() => breaks(town ? [...town.segs.values()].map(s => s.foot) : [], [0.5, 0.75, 0.9, 0.97]), [town])
   const subzoneBreaks = useMemo(() => breaks((subzones?.features ?? []).map(f => Number(f.properties?.seniors ?? 0)).filter(n => n > 0), [0.2, 0.4, 0.6, 0.8]), [subzones])
   const accuracy = useMemo(() => (town && summary ? routeAccuracy(routes, town.segs.values(), summary.footP50) : null), [town, routes, summary])
+  // Town footfall cut-offs: below p50 fades on the map, p75 and up is a hotspot.
+  const footP = useMemo<[number, number] | null>(() => {
+    if (!town || !summary) return null
+    const v = [...town.segs.values()].map(s => s.foot).sort((a, b) => a - b)
+    return [summary.footP50, summary.footP75 ?? v[Math.floor(v.length * 0.75)] ?? 0]
+  }, [town, summary])
+  const hotTitle = useCallback((h: Hotspot) => {
+    if (h.name) return h.name
+    // Most paths are unnamed: borrow the nearest block (gap "near" labels first, then blocks.json).
+    const d = (a: LngLat) => Math.hypot((a[0] - h.at[0]) * Math.cos(h.at[1] * Math.PI / 180), a[1] - h.at[1]) * 111320
+    let best: [number, string] | null = null
+    for (const g of town?.gaps ?? []) if (g.near && (!best || d(g.at) < best[0])) best = [d(g.at), g.near]
+    for (const f of blocks?.features ?? []) {
+      const at = (f.geometry as GeoJSON.Point).coordinates as LngLat
+      if (!best || d(at) < best[0]) best = [d(at), `Blk ${f.properties?.blk} ${f.properties?.street}`]
+    }
+    return best && best[0] < 300 ? `Near ${best[1]}` : 'Unnamed path'
+  }, [town, blocks])
+  // Stretches that share a title (same street or nearest block) are one place to a reader: merge them.
+  const hot = useMemo(() => {
+    const out: Hotspot[] = []
+    const seen = new Map<string, Hotspot>()
+    for (const h of town && footP ? hotspots(town.segs.values(), footP[1], 30) : []) {
+      const t = hotTitle(h), prev = seen.get(t)
+      if (prev) { prev.segs.push(...h.segs); prev.len += h.len; continue }
+      const copy = { ...h, segs: [...h.segs] }
+      seen.set(t, copy); out.push(copy)
+    }
+    return out.slice(0, 10)
+  }, [town, footP, hotTitle])
+  const hotIds = useMemo(() => hot.flatMap(h => h.segs), [hot])
   const townNames = useMemo(() => Object.fromEntries((index?.towns ?? []).map(t => [t.slug, t.name])), [index])
 
   const pickGap = (g: Gap) => {
@@ -170,6 +202,10 @@ export default function App() {
     const segs = town?.segs
     if (mobile) setSheetOpen(true)
     select({ kind: 'gap', id: g.id }, segs ? g.segs.flatMap(s => segs.get(s)?.coords ?? []) : [g.at])
+  }
+  const pickHot = (h: Hotspot) => {
+    if (mobile) setSheetOpen(true)
+    select({ kind: 'hot', id: h.id }, h.segs.flatMap(s => town?.segs.get(s)?.coords ?? []))
   }
   const pickSegment = (id: string, from?: Sel) => {
     const s = town?.segs.get(id)
@@ -211,14 +247,15 @@ export default function App() {
   // What is highlighted on the map.
   const selGap = sel?.kind === 'gap' ? (corrected?.gaps.find(g => g.id === sel.id) ?? town?.gaps.find(g => g.id === sel.id) ?? null) : null
   const selSeg = sel?.kind === 'segment' ? town?.segs.get(sel.id) ?? null : null
-  const highlight = selGap ? selGap.segs : selSeg ? [selSeg.id] : []
+  const selHot = sel?.kind === 'hot' ? hot.find(h => h.id === sel.id) ?? null : null
+  const highlight = selGap ? selGap.segs : selSeg ? [selSeg.id] : selHot ? selHot.segs : []
   const mapGaps = slug ? (corrected?.gaps ?? []) : topGaps
   // Fetch the town's photo-check results the first time a segment is opened.
   useEffect(() => {
     if (!selSeg || !slug || vision !== undefined) return
     getJSON<Record<string, VisionEntry>>(`/data/towns/${slug}/vision.json`).then(setVision, () => setVision(null))
   }, [selSeg, slug, vision])
-  const pin = selGap ? { at: selGap.at, label: `${selGap.label}, ${gapPlace(selGap)}` } : selSeg ? { at: selSeg.mid, label: placeName(selSeg.name) } : null
+  const pin = selHot ? { at: selHot.at, label: hotTitle(selHot) } : selGap ? { at: selGap.at, label: `${selGap.label}, ${gapPlace(selGap)}` } : selSeg ? { at: selSeg.mid, label: placeName(selSeg.name) } : null
 
   // Esc clears the selection (and leaves the explainer).
   useEffect(() => {
@@ -231,6 +268,10 @@ export default function App() {
     return () => removeEventListener('keydown', onKey)
   }, [])
 
+  const fixesShown = view === 'main' && (!slug || listMode === 'fixes')
+  const numbered = useMemo(
+    () => (fixesShown ? (slug ? ranked : rankedTop).slice(0, 10).map(g => ({ id: g.id, at: g.at, label: `${g.label}, ${gapPlace(g)}` })) : []),
+    [fixesShown, slug, ranked, rankedTop])
   const picker = index && <TownPicker towns={index.towns} value={slug} onChange={s => (s ? pickTown(s) : allTowns())} />
 
   /* ---------- panel body ---------- */
@@ -275,6 +316,13 @@ export default function App() {
       <RetryError onRetry={() => setTownTry(n => n + 1)}>This town's data could not be loaded. It may still be processing.</RetryError></div>
   } else if (!town || !corrected) {
     body = <div className="stack">{picker}<Skeleton /></div>
+  } else if (selHot) {
+    const ids = new Set(selHot.segs)
+    body = <>
+      <div className="detail-bar"><span /><CloseButton onClick={() => setSel(null)} /></div>
+      <HotspotDetail spot={selHot} title={hotTitle(selHot)} rank={hot.indexOf(selHot) + 1}
+        fixes={sortGaps(corrected.gaps.filter(g => g.segs.some(x => ids.has(x))), 'impact')} onGap={pickGap} />
+    </>
   } else if (selGap) {
     const removed = !corrected.gaps.some(g => g.id === selGap.id)
     const rank = ranked.findIndex(g => g.id === selGap.id) + 1
@@ -283,7 +331,7 @@ export default function App() {
     body = <>
       <div className="detail-bar"><span /><CloseButton onClick={() => setSel(null)} /></div>
       <GapDetail
-        key={selGap.id} gap={selGap} removed={removed} rank={rank} total={ranked.length} sortLabel={SORT_LABEL[sort]} verdict={v}
+        key={selGap.id} gap={selGap} onHotspot={!!footP && selGap.foot >= footP[1]} removed={removed} rank={rank} total={ranked.length} sortLabel={SORT_LABEL[sort]} verdict={v}
         segs={segs} index={index}
         onVerdict={verdict => sendCorrection({ segment: selGap.segs[0], gap: selGap.id, barrier: selGap.barrier, verdict })}
         onMissed={(b, note) => segs[0] && sendCorrection({ segment: segs[0].id, barrier: b, verdict: 'missed', note })}
@@ -306,10 +354,21 @@ export default function App() {
     body = (
       <div className="stack">
         {picker}
-        <section className="stack-sm" aria-labelledby="fixes-h">
-          <div className="list-head"><h2 id="fixes-h">Priority fixes</h2><SortControl value={sort} onChange={setSort} /></div>
-          <GapList key={slug} gaps={ranked} onPick={pickGap} />
-        </section>
+        <div className="switch" role="group" aria-label="Show">
+          <button type="button" aria-pressed={listMode === 'hot'} onClick={() => setListMode('hot')}>Hotspots</button>
+          <button type="button" aria-pressed={listMode === 'fixes'} onClick={() => setListMode('fixes')}>Fixes</button>
+        </div>
+        {listMode === 'hot' ? (
+          <section className="stack-sm" aria-labelledby="hot-h">
+            <h2 id="hot-h" className="list-title">Where seniors walk most</h2>
+            <HotspotList spots={hot} title={hotTitle} onPick={pickHot} />
+          </section>
+        ) : (
+          <section className="stack-sm" aria-labelledby="fixes-h">
+            <div className="list-head"><h2 id="fixes-h">Priority fixes</h2><SortControl value={sort} onChange={setSort} /></div>
+            <GapList key={slug} gaps={ranked} onPick={pickGap} />
+          </section>
+        )}
         <button type="button" className="btn btn-secondary wide" onClick={() => { setView('draw'); setSel(null); setDraft([]); setRouteMsg(null) }}>
           <PathIcon aria-hidden size={20} />Draw my route
         </button>
@@ -317,7 +376,7 @@ export default function App() {
     )
   }
 
-  const peekTitle = view === 'draw' ? `Draw my route: ${draft.length} points` : selGap ? `${selGap.label}, ${gapPlace(selGap).replace(/^Near/, 'near')}` : selSeg ? placeName(selSeg.name) : summary?.name ?? 'Singapore'
+  const peekTitle = selHot ? hotTitle(selHot) : view === 'draw' ? `Draw my route: ${draft.length} points` : selGap ? `${selGap.label}, ${gapPlace(selGap).replace(/^Near/, 'near')}` : selSeg ? placeName(selSeg.name) : summary?.name ?? 'Singapore'
 
   return (
     <div className={`app${view === 'draw' ? ' drawing' : ''}${sheetOpen ? ' sheet-open' : ''}${sel ? ' has-sel' : ''}`}>
@@ -325,6 +384,7 @@ export default function App() {
         scheme={scheme} reducedMotion={reducedMotion} padding={padding}
         subzones={subzones} subzoneBreaks={subzoneBreaks} town={slug}
         segments={town?.segments ?? null} footBreaks={footBreaks} gaps={mapGaps} pin={pin}
+        footP={footP} hotIds={slug ? hotIds : []} numbered={numbered}
         blocks={blocks} destinations={dests} destLabels={Object.fromEntries(Object.entries(index?.destTypes ?? {}).map(([k, d]) => [k, d.label]))}
         routes={routes} draft={view === 'draw' ? draft : null} highlight={highlight} layers={layers} fly={fly}
         onTown={pickTown} onGap={id => { const g = corrected?.gaps.find(x => x.id === id) ?? topGaps.find(x => x.id === id); if (g) pickGap(g) }}

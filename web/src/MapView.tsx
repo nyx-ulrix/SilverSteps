@@ -46,6 +46,12 @@ type Props = {
   footBreaks: number[]
   gaps: Gap[]
   pin: { at: LngLat; label: string } | null
+  /** town footfall medians: below p50 fades, p75+ is a hotspot */
+  footP: [number, number] | null
+  /** segment ids of the top hotspot stretches, drawn thickest */
+  hotIds: string[]
+  /** numbered markers for the top fixes */
+  numbered: { id: string; at: LngLat; label: string }[]
   blocks: FeatureCollection | null
   destinations: FeatureCollection | null
   destLabels: Record<string, string>
@@ -78,6 +84,7 @@ export default function MapView(p: Props) {
   live.current = p
   const [ready, setReady] = useState(false)
   const pinMarker = useRef<Marker | null>(null)
+  const numMarkers = useRef<Marker[]>([])
 
   useEffect(() => {
     const map = new MLMap({
@@ -216,9 +223,15 @@ export default function MapView(p: Props) {
     map.setPaintProperty('subzones-fill', 'fill-opacity', p.town ? ['case', ['==', ['get', 'town'], p.town], 0, 0.35] : 0.5)
     map.setPaintProperty('subzones-line', 'line-color', c.outline)
     map.setPaintProperty('subzones-line', 'line-opacity', p.town ? 0 : 0.5)
-    map.setPaintProperty('segments', 'line-color', focus ? c.muted : step('foot', p.footBreaks, c.ramp))
-    map.setPaintProperty('segments', 'line-opacity', focus ? 0.25 : 1)
-    map.setPaintProperty('segments', 'line-width', focus ? 1.25 : ['interpolate', ['linear'], ['zoom'], 13, step('foot', p.footBreaks, [1, 1.5, 2.5, 3.5, 5]), 17, step('foot', p.footBreaks, [2, 4, 6, 9, 12])] as unknown as ExpressionSpecification)
+    // Hotspots by default: quiet paths (below the town median) thin and pale, busiest quarter bold,
+    // the top stretches boldest. A selection turns every other line grey.
+    const [p50, p75] = p.footP ?? [0, 0]
+    const hot = ['in', ['get', 'id'], ['literal', p.hotIds]]
+    const w = (lo: number, mid: number, high: number, top: number) =>
+      ['case', hot, top, ['<', ['get', 'foot'], p50], lo, ['<', ['get', 'foot'], p75], mid, high]
+    map.setPaintProperty('segments', 'line-color', focus ? c.muted : ['case', hot, c.ramp[4], step('foot', p.footBreaks, c.ramp)] as unknown as ExpressionSpecification)
+    map.setPaintProperty('segments', 'line-opacity', focus ? 0.25 : ['case', ['<', ['get', 'foot'], p50], 0.3, 1] as unknown as ExpressionSpecification)
+    map.setPaintProperty('segments', 'line-width', focus ? 1.25 : ['interpolate', ['linear'], ['zoom'], 13, w(0.5, 1.2, 2.5, 5), 17, w(1, 2.5, 5, 11)] as unknown as ExpressionSpecification)
     map.setPaintProperty('gaps', 'circle-opacity', focus ? 0.35 : 1)
     map.setPaintProperty('highlight-case', 'line-color', c.ring)
     map.setPaintProperty('highlight', 'line-color', c.highlight)
@@ -230,7 +243,7 @@ export default function MapView(p: Props) {
     map.setPaintProperty('draft-line', 'line-color', c.highlight)
     map.setPaintProperty('draft-pts', 'circle-color', c.highlight)
     map.setPaintProperty('draft-pts', 'circle-stroke-color', c.ring)
-  }, [map, p.scheme, p.footBreaks, p.subzoneBreaks, p.town, focus])
+  }, [map, p.scheme, p.footBreaks, p.subzoneBreaks, p.town, focus, p.footP, p.hotIds])
 
   useEffect(() => { set('subzones', p.subzones) }, [map, p.subzones])
   useEffect(() => { set('segments', p.segments) }, [map, p.segments])
@@ -259,6 +272,21 @@ export default function MapView(p: Props) {
     const t = setTimeout(() => map.setPaintProperty('highlight', 'line-width', HL_WIDTH), 350)
     return () => clearTimeout(t)
   }, [map, p.highlight])
+
+  // Numbered markers for the top fixes: real buttons, so they work from the keyboard too.
+  useEffect(() => {
+    if (!map) return
+    numMarkers.current = p.numbered.map((g, i) => {
+      const b = document.createElement('button')
+      b.type = 'button'
+      b.className = 'gap-marker'
+      b.textContent = String(i + 1)
+      b.setAttribute('aria-label', `Fix ${i + 1}: ${g.label}`)
+      b.addEventListener('click', e => { e.stopPropagation(); live.current.onGap(g.id) })
+      return new Marker({ element: b }).setLngLat(g.at).addTo(map)
+    })
+    return () => { numMarkers.current.forEach(m => m.remove()); numMarkers.current = [] }
+  }, [map, p.numbered])
 
   useEffect(() => {
     const m = pinMarker.current
