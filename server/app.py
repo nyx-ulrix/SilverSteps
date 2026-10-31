@@ -65,8 +65,10 @@ class Route(Base):
 Base.metadata.create_all(engine)
 
 TOWN = r"^[a-z0-9-]{1,40}$"
-Barrier = Literal["steps", "crossing", "kerb", "no_shelter", "rest_gap", "surface", "dark", "slope", "obstruction"]
-Dest = Literal["hawker", "bus", "park", "supermarket", "mrt", "eldercare", "community", "clinic", "polyclinic"]
+Barrier = Literal["steps", "crossing", "kerb", "no_shelter", "rest_gap", "surface", "dark", "slope", "obstruction",
+                  "no_tactile", "silent_signal"]
+Dest = Literal["hawker", "kopitiam", "bus", "fitness", "park", "supermarket", "mrt", "eldercare", "community",
+               "clinic", "polyclinic"]
 
 
 class FeedbackIn(BaseModel):

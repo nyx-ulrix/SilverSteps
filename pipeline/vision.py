@@ -48,11 +48,14 @@ class Checklist(BaseModel):
     surface_ok: Item    # even, intact surface with no broken slabs or large cracks
     obstruction: Item   # something blocking part of the path (poles, parked bikes, goods, works)
     signage: Item       # wayfinding or crossing signs visible
+    tactile_paving: Item  # raised tactile (studded or ribbed) paving at kerbs, crossings or stairs
+    ped_signal: Item    # a pedestrian traffic light, with push-button box if visible
     notes: str          # one short sentence on anything a senior would struggle with
 
 
 PROMPT = """These two photos look both ways along one footpath in a Singapore HDB estate, from Google Street View.
-Fill the checklist for THIS footpath only, as a planner checking whether a 75-year-old using a walking frame could use it.
+Fill the checklist for THIS footpath only, as a planner checking whether a 75-year-old using a walking frame,
+or one with low vision, could use it safely.
 Use "unknown" whenever the photos don't clearly show it (path out of view, too far away, blocked, blurry, or ambiguous).
 Confidence is how sure you are of the value, from 0 to 1. Keep notes to one plain sentence."""
 

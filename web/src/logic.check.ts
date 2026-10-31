@@ -40,3 +40,12 @@ console.log('logic ok')
   assert.deepEqual(h.map(x => [x.segs.length, x.foot]), [[1, 900], [2, 500]])
   console.log('hotspots ok')
 }
+// risk areas: two gaps 100 m apart merge, a third 1 km away stays alone; bigger score first
+{
+  const { riskAreas } = await import('./logic.ts')
+  const G = (id: string, x: number, foot: number): Gap => ({ ...gaps[0], id, at: [103.8 + x, 1.37], foot, segs: [] })
+  const r = riskAreas([G('a', 0, 100), G('b', 0.0009, 100), G('c', 0.01, 150)])
+  assert.deepEqual(r.map(a => [a.gaps.length, a.score]), [[2, 600], [1, 450]])
+  assert.ok(r[0].radiusM >= 80)
+  console.log('risk ok')
+}

@@ -2,21 +2,23 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, 
 import type { Map as MLMap } from 'maplibre-gl'
 import type { FeatureCollection, LineString } from 'geojson'
 import { InfoIcon, PathIcon, CaretUpIcon, CaretDownIcon, StackIcon } from '@phosphor-icons/react'
-import MapView, { MAP_COLORS, type FlyTarget, type Layers, type Scheme } from './MapView.tsx'
+import MapView, { FAMILY_LABEL, FAMILY_OF, MAP_COLORS, type Family, type FlyTarget, type Layers, type Scheme } from './MapView.tsx'
 import { api, ApiError, getJSON } from './api.ts'
 import {
-  applyCorrections, breaks, hotspots, routeAccuracy, sortGaps, type Hotspot,
+  affects, applyCorrections, breaks, distToLine, hotspots, riskAreas, routeAccuracy, sortGaps, type BlockRoute, type Hotspot,
   type Feedback, type Gap, type IndexData, type LngLat, type Route, type Seg, type SegInfo, type SortMode, type Verdict, type VisionEntry,
 } from './logic.ts'
 import {
-  About, BackButton, CloseButton, DrawPanel, GapDetail, GapList, HotspotDetail, HotspotList, RetryError, SegmentDetail, Skeleton,
+  About, BackButton, CloseButton, DrawPanel, GapDetail, GapList, HotspotDetail, HotspotList, RetryError, RiskDetail, RouteDetail, RouteList, SegmentDetail, Skeleton,
+  routeTitle, type Likelihood, type RouteSort,
   SORT_LABEL, SortControl, TownPicker, fmt, gapPlace, placeName, type SaveState,
 } from './Panels.tsx'
 
 type TownData = { slug: string; segments: FeatureCollection; segs: Map<string, SegInfo>; gaps: Gap[] }
-type Sel = { kind: 'gap' | 'segment' | 'hot'; id: string; from?: Sel } | null
+type Sel = { kind: 'gap' | 'segment' | 'hot' | 'risk' | 'route'; id: string; from?: Sel } | null
 type View = 'main' | 'about' | 'draw'
 
+const NONE: never[] = []
 const SAVE_FAILED = "Corrections can't be saved right now. This change shows on this device only."
 
 function useMedia(q: string) {
@@ -62,13 +64,19 @@ export default function App() {
   const [sel, setSel] = useState<Sel>(null)
   const pendingGap = useRef<string | null>(null)
   const [sort, setSort] = useState<SortMode>('impact')
-  const [listMode, setListMode] = useState<'hot' | 'fixes'>('hot')
+  const [listMode, setListMode] = useState<'hot' | 'fixes' | 'routes'>('hot')
+  // Block-to-place routes: loaded only when the Routes view opens (about 2 MB per town).
+  const [townRoutes, setTownRoutes] = useState<BlockRoute[] | null | 'error'>(null)
+  const [routeSort, setRouteSort] = useState<RouteSort>('likely')
+  const [families, setFamilies] = useState<Set<Family>>(() => new Set(Object.keys(FAMILY_LABEL) as Family[]))
+  const [blk, setBlk] = useState('')
+  const [who, setWho] = useState<'all' | 'mobility' | 'sight'>('all')
   const [view, setView] = useState<View>('main')
   const [draft, setDraft] = useState<LngLat[]>([])
   const [dest, setDest] = useState('')
   const [savingRoute, setSavingRoute] = useState(false)
   const [routeMsg, setRouteMsg] = useState<string | null>(null)
-  const [layers, setLayers] = useState<Layers>({ footfall: true, barriers: false, blocks: false, destinations: false, routes: false })
+  const [layers, setLayers] = useState<Layers>({ footfall: true, barriers: false, blocks: false, destinations: false, routes: false, risk: true })
   const [sheetOpen, setSheetOpen] = useState(() => !(matchMedia('(max-width: 767px)').matches && location.hash.length > 1))
   const [fly, setFly] = useState<FlyTarget | null>(null)
   const mapRef = useRef<MLMap | null>(null)
@@ -104,7 +112,7 @@ export default function App() {
   // Lazy-load only the selected town's files.
   useEffect(() => {
     history.replaceState(null, '', slug ? `#${slug}` : location.pathname + location.search)
-    setTown(null); setBlocks(null); setDests(null); setFeedback([]); setRoutes([]); setVision(undefined); setTownErr(false); setSaveError(null)
+    setTown(null); setBlocks(null); setDests(null); setFeedback([]); setRoutes([]); setVision(undefined); setTownRoutes(null); setBlk(''); setTownErr(false); setSaveError(null)
     if (!slug) return
     let live = true
     const base = `/data/towns/${slug}`
@@ -155,8 +163,11 @@ export default function App() {
   const corrected = useMemo(
     () => (town && index ? applyCorrections(town.segs, town.gaps, feedback, index.barriers) : null),
     [town, feedback, index])
-  const ranked = useMemo(() => sortGaps(corrected?.gaps ?? [], sort), [corrected, sort])
-  const rankedTop = useMemo(() => sortGaps(topGaps, sort), [topGaps, sort])
+  // "Who for" keeps only barriers that affect that group, then re-ranks.
+  const forWho = useCallback((gs: Gap[]) => (index ? gs.filter(g => affects(index.barriers, g.barrier, who)) : gs), [index, who])
+  const visibleGaps = useMemo(() => forWho(corrected?.gaps ?? []), [corrected, forWho])
+  const ranked = useMemo(() => sortGaps(visibleGaps, sort), [visibleGaps, sort])
+  const rankedTop = useMemo(() => sortGaps(forWho(topGaps), sort), [topGaps, sort, forWho])
   const footBreaks = useMemo(() => breaks(town ? [...town.segs.values()].map(s => s.foot) : [], [0.5, 0.75, 0.9, 0.97]), [town])
   const subzoneBreaks = useMemo(() => breaks((subzones?.features ?? []).map(f => Number(f.properties?.seniors ?? 0)).filter(n => n > 0), [0.2, 0.4, 0.6, 0.8]), [subzones])
   const accuracy = useMemo(() => (town && summary ? routeAccuracy(routes, town.segs.values(), summary.footP50) : null), [town, routes, summary])
@@ -191,6 +202,30 @@ export default function App() {
     return out.slice(0, 10)
   }, [town, footP, hotTitle])
   const hotIds = useMemo(() => hot.flatMap(h => h.segs), [hot])
+  useEffect(() => {
+    if (listMode !== 'routes' || !slug || townRoutes !== null) return
+    let live = true
+    getJSON<BlockRoute[]>(`/data/towns/${slug}/routes.json`).then(r => live && setTownRoutes(r), () => live && setTownRoutes('error'))
+    return () => { live = false }
+  }, [listMode, slug, townRoutes])
+  const routeList = Array.isArray(townRoutes) ? townRoutes : NONE
+  const filteredRoutes = useMemo(() => {
+    const b = blk.trim().toLowerCase()
+    const out = routeList.filter(r => families.has(FAMILY_OF[r.type] ?? 'shops') && (!b || r.blk.toLowerCase() === b || r.blk.toLowerCase().startsWith(b + ' ')))
+    // routes.json is already sorted by trips, most first.
+    return routeSort === 'unlikely' ? out.reverse() : routeSort === 'short' ? out.sort((a, b2) => a.len - b2.len) : out
+  }, [routeList, families, blk, routeSort])
+  const tripCuts = useMemo(() => {
+    const v = routeList.map(r => r.trips).sort((a, b) => a - b)
+    return [v[Math.floor(v.length * 0.25)] ?? 0, v[Math.floor(v.length * 0.75)] ?? 0]
+  }, [routeList])
+  const likelihood = (r: BlockRoute): Likelihood => (r.trips >= tripCuts[1] ? 'High' : r.trips >= tripCuts[0] ? 'Medium' : 'Low')
+  const typeLabel = (t: string) => index?.destTypes[t]?.label ?? t
+  const blockNames = useMemo(() => [...new Set(routeList.map(r => r.blk))].sort(), [routeList])
+  const mapRoutes = useMemo(() => (slug && listMode === 'routes'
+    ? filteredRoutes.slice(0, 150).map(r => ({ id: String(r.id), coords: r.coords, family: FAMILY_OF[r.type] ?? 'shops' as Family, trips: r.trips }))
+    : NONE), [slug, listMode, filteredRoutes])
+  const risks = useMemo(() => riskAreas(slug ? visibleGaps : rankedTop), [slug, visibleGaps, rankedTop])
   const townNames = useMemo(() => Object.fromEntries((index?.towns ?? []).map(t => [t.slug, t.name])), [index])
 
   const pickGap = (g: Gap) => {
@@ -206,6 +241,17 @@ export default function App() {
   const pickHot = (h: Hotspot) => {
     if (mobile) setSheetOpen(true)
     select({ kind: 'hot', id: h.id }, h.segs.flatMap(s => town?.segs.get(s)?.coords ?? []))
+  }
+  const pickRisk = (id: string) => {
+    const r = risks.find(x => x.id === id)
+    if (!r) return
+    if (mobile) setSheetOpen(true)
+    const k = r.radiusM / 110540
+    select({ kind: 'risk', id }, [[r.center[0] - k, r.center[1] - k], [r.center[0] + k, r.center[1] + k]])
+  }
+  const pickRoute = (r: BlockRoute) => {
+    if (mobile) setSheetOpen(true)
+    select({ kind: 'route', id: String(r.id) }, r.coords)
   }
   const pickSegment = (id: string, from?: Sel) => {
     const s = town?.segs.get(id)
@@ -248,14 +294,18 @@ export default function App() {
   const selGap = sel?.kind === 'gap' ? (corrected?.gaps.find(g => g.id === sel.id) ?? town?.gaps.find(g => g.id === sel.id) ?? null) : null
   const selSeg = sel?.kind === 'segment' ? town?.segs.get(sel.id) ?? null : null
   const selHot = sel?.kind === 'hot' ? hot.find(h => h.id === sel.id) ?? null : null
-  const highlight = selGap ? selGap.segs : selSeg ? [selSeg.id] : selHot ? selHot.segs : []
-  const mapGaps = slug ? (corrected?.gaps ?? []) : topGaps
+  const selRisk = sel?.kind === 'risk' ? risks.find(r => r.id === sel.id) ?? null : null
+  const selRoute = sel?.kind === 'route' ? routeList.find(r => String(r.id) === sel.id) ?? null : null
+  const routeHl = useMemo(() => (selRoute ? { coords: selRoute.coords, from: selRoute.coords[0], label: selRoute.blk } : null), [selRoute])
+  // Stable array so the map only re-filters (and pulses) when the selection really changes.
+  const highlight = useMemo(() => (selGap ? selGap.segs : selSeg ? [selSeg.id] : selHot ? selHot.segs : selRisk ? selRisk.gaps.flatMap(g => g.segs) : NONE), [selGap, selSeg, selHot, selRisk])
+  const mapGaps = slug ? visibleGaps : rankedTop
   // Fetch the town's photo-check results the first time a segment is opened.
   useEffect(() => {
     if (!selSeg || !slug || vision !== undefined) return
     getJSON<Record<string, VisionEntry>>(`/data/towns/${slug}/vision.json`).then(setVision, () => setVision(null))
   }, [selSeg, slug, vision])
-  const pin = selHot ? { at: selHot.at, label: hotTitle(selHot) } : selGap ? { at: selGap.at, label: `${selGap.label}, ${gapPlace(selGap)}` } : selSeg ? { at: selSeg.mid, label: placeName(selSeg.name) } : null
+  const pin = selRoute ? { at: selRoute.coords.at(-1)!, label: `Route ends at ${selRoute.dest}` } : selHot ? { at: selHot.at, label: hotTitle(selHot) } : selGap ? { at: selGap.at, label: `${selGap.label}, ${gapPlace(selGap)}` } : selSeg ? { at: selSeg.mid, label: placeName(selSeg.name) } : null
 
   // Esc clears the selection (and leaves the explainer).
   useEffect(() => {
@@ -270,9 +320,19 @@ export default function App() {
 
   const fixesShown = view === 'main' && (!slug || listMode === 'fixes')
   const numbered = useMemo(
-    () => (fixesShown ? (slug ? ranked : rankedTop).slice(0, 10).map(g => ({ id: g.id, at: g.at, label: `${g.label}, ${gapPlace(g)}` })) : []),
+    () => (fixesShown ? (slug ? ranked : rankedTop).slice(0, 10).map(g => ({ id: g.id, at: g.at, label: `${g.label}, ${gapPlace(g)}`, barrier: g.barrier, severity: g.severity })) : []),
     [fixesShown, slug, ranked, rankedTop])
-  const picker = index && <TownPicker towns={index.towns} value={slug} onChange={s => (s ? pickTown(s) : allTowns())} />
+  const picker = index && <>
+    <TownPicker towns={index.towns} value={slug} onChange={s => (s ? pickTown(s) : allTowns())} />
+    <div className="who">
+      <span id="who-l">Who for</span>
+      <div className="switch switch-3" role="group" aria-labelledby="who-l">
+        {([['all', 'Everyone'], ['mobility', 'Walking frame'], ['sight', 'Low vision']] as const).map(([k, l]) => (
+          <button key={k} type="button" aria-pressed={who === k} onClick={() => setWho(k)}>{l}</button>
+        ))}
+      </div>
+    </div>
+  </>
 
   /* ---------- panel body ---------- */
   let body: ReactNode
@@ -316,12 +376,26 @@ export default function App() {
       <RetryError onRetry={() => setTownTry(n => n + 1)}>This town's data could not be loaded. It may still be processing.</RetryError></div>
   } else if (!town || !corrected) {
     body = <div className="stack">{picker}<Skeleton /></div>
+  } else if (selRoute) {
+    // A route barrier links to a fix when a gap with that barrier sits on the route.
+    const near = (b: string) => visibleGaps.find(g => g.barrier === b && distToLine(g.at, selRoute.coords) <= 40) ?? null
+    body = <>
+      <div className="detail-bar"><span /><CloseButton onClick={() => setSel(null)} /></div>
+      <RouteDetail route={selRoute} likelihood={likelihood(selRoute)} typeLabel={typeLabel(selRoute.type)} onGap={pickGap}
+        barriers={selRoute.barriers.filter(b => affects(index.barriers, b, who) && index.barriers[b])
+          .map(b => ({ key: b, label: index.barriers[b].label, severity: index.barriers[b].severity, gap: near(b) }))} />
+    </>
+  } else if (selRisk) {
+    body = <>
+      <div className="detail-bar"><span /><CloseButton onClick={() => setSel(null)} /></div>
+      <RiskDetail rank={risks.indexOf(selRisk) + 1} area={selRisk} onPick={pickGap} />
+    </>
   } else if (selHot) {
     const ids = new Set(selHot.segs)
     body = <>
       <div className="detail-bar"><span /><CloseButton onClick={() => setSel(null)} /></div>
       <HotspotDetail spot={selHot} title={hotTitle(selHot)} rank={hot.indexOf(selHot) + 1}
-        fixes={sortGaps(corrected.gaps.filter(g => g.segs.some(x => ids.has(x))), 'impact')} onGap={pickGap} />
+        fixes={sortGaps(visibleGaps.filter(g => g.segs.some(x => ids.has(x))), 'impact')} onGap={pickGap} />
     </>
   } else if (selGap) {
     const removed = !corrected.gaps.some(g => g.id === selGap.id)
@@ -354,11 +428,20 @@ export default function App() {
     body = (
       <div className="stack">
         {picker}
-        <div className="switch" role="group" aria-label="Show">
+        <div className="switch switch-3" role="group" aria-label="Show">
           <button type="button" aria-pressed={listMode === 'hot'} onClick={() => setListMode('hot')}>Hotspots</button>
           <button type="button" aria-pressed={listMode === 'fixes'} onClick={() => setListMode('fixes')}>Fixes</button>
+          <button type="button" aria-pressed={listMode === 'routes'} onClick={() => setListMode('routes')}>Routes</button>
         </div>
-        {listMode === 'hot' ? (
+        {listMode === 'routes' ? (
+          <RouteList
+            routes={filteredRoutes} total={filteredRoutes.length} families={families} colors={MAP_COLORS[scheme].family}
+            onFamily={f => setFamilies(prev => { const n = new Set(prev); if (n.has(f)) n.delete(f); else n.add(f); return n })}
+            sort={routeSort} onSort={setRouteSort} blk={blk} blocks={blockNames} onBlk={setBlk}
+            likelihood={likelihood} typeLabel={typeLabel} onPick={pickRoute}
+            loading={townRoutes === null} error={townRoutes === 'error'}
+          />
+        ) : listMode === 'hot' ? (
           <section className="stack-sm" aria-labelledby="hot-h">
             <h2 id="hot-h" className="list-title">Where seniors walk most</h2>
             <HotspotList spots={hot} title={hotTitle} onPick={pickHot} />
@@ -376,7 +459,7 @@ export default function App() {
     )
   }
 
-  const peekTitle = selHot ? hotTitle(selHot) : view === 'draw' ? `Draw my route: ${draft.length} points` : selGap ? `${selGap.label}, ${gapPlace(selGap).replace(/^Near/, 'near')}` : selSeg ? placeName(selSeg.name) : summary?.name ?? 'Singapore'
+  const peekTitle = selRoute ? routeTitle(selRoute) : selRisk ? `High risk area ${risks.indexOf(selRisk) + 1}` : selHot ? hotTitle(selHot) : view === 'draw' ? `Draw my route: ${draft.length} points` : selGap ? `${selGap.label}, ${gapPlace(selGap).replace(/^Near/, 'near')}` : selSeg ? placeName(selSeg.name) : summary?.name ?? 'Singapore'
 
   return (
     <div className={`app${view === 'draw' ? ' drawing' : ''}${sheetOpen ? ' sheet-open' : ''}${sel ? ' has-sel' : ''}`}>
@@ -385,6 +468,12 @@ export default function App() {
         subzones={subzones} subzoneBreaks={subzoneBreaks} town={slug}
         segments={town?.segments ?? null} footBreaks={footBreaks} gaps={mapGaps} pin={pin}
         footP={footP} hotIds={slug ? hotIds : []} numbered={numbered}
+        risk={layers.risk && view === 'main' && listMode !== 'routes' ? risks : NONE}
+        routesMode={!!slug && view === 'main' && listMode === 'routes'}
+        troutes={mapRoutes}
+        routeHl={routeHl}
+        onRisk={pickRisk} onRoute={id => { const r = routeList.find(x => String(x.id) === id); if (r) pickRoute(r) }}
+        onBlock={b => { setBlk(b); if (mobile) setSheetOpen(true) }}
         blocks={blocks} destinations={dests} destLabels={Object.fromEntries(Object.entries(index?.destTypes ?? {}).map(([k, d]) => [k, d.label]))}
         routes={routes} draft={view === 'draw' ? draft : null} highlight={highlight} layers={layers} fly={fly}
         onTown={pickTown} onGap={id => { const g = corrected?.gaps.find(x => x.id === id) ?? topGaps.find(x => x.id === id); if (g) pickGap(g) }}
@@ -412,7 +501,7 @@ export default function App() {
         <div className="panel-body" ref={panelRef}>{body}</div>
       </aside>
 
-      <MapKey layers={layers} setLayers={setLayers} scheme={scheme} town={!!slug} footBreaks={footBreaks} subzoneBreaks={subzoneBreaks} />
+      <MapKey layers={layers} setLayers={setLayers} scheme={scheme} town={!!slug} footBreaks={footBreaks} subzoneBreaks={subzoneBreaks} routesMode={!!slug && listMode === 'routes'} />
     </div>
   )
 }
@@ -422,9 +511,9 @@ function rangeLabels(br: number[]) {
   return [`Under ${fmt(br[0])}`, ...br.slice(0, -1).map((b, i) => `${fmt(b)} to ${fmt(br[i + 1])}`), `${fmt(br.at(-1)!)} or more`]
 }
 
-function MapKey({ layers, setLayers, scheme, town, footBreaks, subzoneBreaks }: {
+function MapKey({ layers, setLayers, scheme, town, footBreaks, subzoneBreaks, routesMode }: {
   layers: Layers; setLayers: (f: (l: Layers) => Layers) => void; scheme: Scheme; town: boolean
-  footBreaks: number[]; subzoneBreaks: number[]
+  footBreaks: number[]; subzoneBreaks: number[]; routesMode: boolean
 }) {
   const c = MAP_COLORS[scheme]
   const ramp = (title: string, br: number[]) => (
@@ -442,7 +531,6 @@ function MapKey({ layers, setLayers, scheme, town, footBreaks, subzoneBreaks }: 
       {label}
     </label>
   )
-  const showMini = town ? layers.footfall && footBreaks.length > 0 : subzoneBreaks.length > 0
   return (
     <div className="mapkey">
       <details>
@@ -452,7 +540,14 @@ function MapKey({ layers, setLayers, scheme, town, footBreaks, subzoneBreaks }: 
             <>
               {toggle('footfall', 'Senior footfall', { background: `linear-gradient(90deg, ${c.ramp.join(',')})` })}
               {layers.footfall && footBreaks.length > 0 && ramp('Estimated senior trips per week (modelled)', footBreaks)}
+              {toggle('risk', 'High risk areas', { background: `${c.risk}33`, border: `2px dashed ${c.risk}`, borderRadius: '50%' })}
               {toggle('barriers', 'Barriers (larger is more severe)', { background: c.barrier, borderRadius: '50%' })}
+              {routesMode && (
+                <div className="ramp">
+                  <p className="ramp-title">Routes from HDB blocks, by place (wider is more trips)</p>
+                  <ul>{(Object.keys(FAMILY_LABEL) as Family[]).map(f => <li key={f}><span className="swatch" style={{ background: c.family[f] }} />{FAMILY_LABEL[f]}</li>)}</ul>
+                </div>
+              )}
               {toggle('routes', 'Routes drawn by residents', { background: `repeating-linear-gradient(90deg, ${c.route} 0 6px, transparent 6px 10px)`, height: 4 })}
               {toggle('blocks', 'HDB blocks (size shows estimated seniors)', { background: c.block, borderRadius: '50%' })}
               {toggle('destinations', 'Places seniors walk to', { border: `2px solid ${c.dest}`, borderRadius: '50%' })}
@@ -460,18 +555,12 @@ function MapKey({ layers, setLayers, scheme, town, footBreaks, subzoneBreaks }: 
           ) : (
             <>
               {subzoneBreaks.length > 0 && ramp('Estimated residents aged 65+ per subzone', subzoneBreaks)}
+              {toggle('risk', 'High risk areas', { background: `${c.risk}33`, border: `2px dashed ${c.risk}`, borderRadius: '50%' })}
               {toggle('barriers', 'Top barriers nationwide', { background: c.barrier, borderRadius: '50%' })}
             </>
           )}
         </div>
       </details>
-      {showMini && (
-        <div className="legend-mini" aria-hidden>
-          <span className="legend-cap">{town ? 'Senior trips a week (modelled)' : 'Seniors per subzone (estimate)'}</span>
-          <span className="legend-bar" style={{ background: `linear-gradient(90deg, ${c.ramp.join(',')})` }} />
-          <span className="legend-ends"><span>Fewer</span><span>More</span></span>
-        </div>
-      )}
     </div>
   )
 }

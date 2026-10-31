@@ -1,13 +1,23 @@
 import { useEffect, useRef, useState } from 'react'
 import { Map as MLMap, setWorkerUrl, AttributionControl, NavigationControl, Popup, Marker, type GeoJSONSource, type MapMouseEvent, type ExpressionSpecification } from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
+import { createRoot, type Root } from 'react-dom/client'
+import { BarrierBadge } from './Badge.tsx'
 // MapLibre 6 finds its worker next to its own module file, which a bundle breaks. Hand it a bundled worker instead.
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 setWorkerUrl(workerUrl)
 import type { FeatureCollection, Geometry } from 'geojson'
-import type { Gap, LngLat, Route } from './logic.ts'
+import { circle, type Gap, type LngLat, type Route } from './logic.ts'
 
-export type Layers = { footfall: boolean; barriers: boolean; blocks: boolean; destinations: boolean; routes: boolean }
+export type Layers = { footfall: boolean; barriers: boolean; blocks: boolean; destinations: boolean; routes: boolean; risk: boolean }
+export type Family = 'food' | 'transport' | 'health' | 'active' | 'care' | 'shops'
+export const FAMILY_OF: Record<string, Family> = {
+  hawker: 'food', kopitiam: 'food', bus: 'transport', mrt: 'transport', clinic: 'health', polyclinic: 'health',
+  fitness: 'active', park: 'active', eldercare: 'care', community: 'care', supermarket: 'shops',
+}
+export const FAMILY_LABEL: Record<Family, string> = {
+  food: 'Food', transport: 'Bus and MRT', health: 'Clinics', active: 'Parks and fitness', care: 'Care and community', shops: 'Supermarkets',
+}
 export type Scheme = 'light' | 'dark'
 export type FlyTarget = { bbox?: [number, number, number, number]; center?: LngLat; zoom?: number; n: number }
 
@@ -18,11 +28,15 @@ export const MAP_COLORS = {
     ramp: ['#9ec5f4', '#6da7ec', '#2a78d6', '#1c5cab', '#0d366b'],
     barrier: '#c93636', ring: '#fafafa', highlight: '#0f766e', route: '#d4541f',
     block: '#71717a', dest: '#27272a', outline: '#52525b', muted: '#71717a', bg: '#f4f4f5', veil: '#52525b',
+    risk: '#c2410c',
+    family: { transport: '#2a78d6', food: '#eb6834', health: '#1baf7a', shops: '#eda100', care: '#e87ba4', active: '#008300' } as Record<Family, string>,
   },
   dark: {
     ramp: ['#1c5cab', '#2a78d6', '#5598e7', '#86b6ef', '#cde2fb'],
     barrier: '#ec7070', ring: '#0b0b0d', highlight: '#2dd4bf', route: '#f08a5d',
     block: '#a1a1aa', dest: '#e4e4e7', outline: '#a1a1aa', muted: '#a1a1aa', bg: '#18181b', veil: '#09090b',
+    risk: '#ff8a5c',
+    family: { transport: '#3987e5', food: '#d95926', health: '#199e70', shops: '#c98500', care: '#d55181', active: '#008300' } as Record<Family, string>,
   },
 }
 
@@ -51,7 +65,12 @@ type Props = {
   /** segment ids of the top hotspot stretches, drawn thickest */
   hotIds: string[]
   /** numbered markers for the top fixes */
-  numbered: { id: string; at: LngLat; label: string }[]
+  numbered: { id: string; at: LngLat; label: string; barrier: string; severity: number }[]
+  risk: { id: string; center: LngLat; radiusM: number }[]
+  /** Routes mode: block-to-place routes to draw, already filtered and capped */
+  routesMode: boolean
+  troutes: { id: string; coords: LngLat[]; family: Family; trips: number }[]
+  routeHl: { coords: LngLat[]; from: LngLat; label: string } | null
   blocks: FeatureCollection | null
   destinations: FeatureCollection | null
   destLabels: Record<string, string>
@@ -63,6 +82,9 @@ type Props = {
   onTown: (slug: string) => void
   onSegment: (id: string) => void
   onGap: (id: string) => void
+  onRisk: (id: string) => void
+  onRoute: (id: string) => void
+  onBlock: (label: string) => void
   onPoint: (p: LngLat) => void
   onEmpty: () => void
   onRightDrag: () => void
@@ -85,6 +107,7 @@ export default function MapView(p: Props) {
   const [ready, setReady] = useState(false)
   const pinMarker = useRef<Marker | null>(null)
   const numMarkers = useRef<Marker[]>([])
+  const fromMarker = useRef<Marker | null>(null)
 
   useEffect(() => {
     const map = new MLMap({
@@ -139,16 +162,19 @@ export default function MapView(p: Props) {
     document.documentElement.addEventListener('mouseleave', stop)
 
     map.on('load', () => {
-      for (const id of ['subzones', 'segments', 'gaps', 'blocks', 'dests', 'routes', 'draft'])
+      for (const id of ['subzones', 'segments', 'gaps', 'blocks', 'dests', 'routes', 'draft', 'risk', 'troutes', 'route-hl'])
         map.addSource(id, { type: 'geojson', data: EMPTY })
       map.addLayer({ id: 'subzones-fill', type: 'fill', source: 'subzones', paint: { 'fill-opacity': 0.5 } })
       map.addLayer({ id: 'subzones-line', type: 'line', source: 'subzones', paint: { 'line-width': 0.6, 'line-opacity': 0.5 } })
+      map.addLayer({ id: 'risk-fill', type: 'fill', source: 'risk', paint: { 'fill-opacity': 0.14 } })
+      map.addLayer({ id: 'risk-line', type: 'line', source: 'risk', paint: { 'line-width': 2, 'line-dasharray': [3, 2] } })
       map.addLayer({ id: 'blocks', type: 'circle', source: 'blocks', paint: {
         'circle-radius': ['interpolate', ['linear'], ['sqrt', ['get', 'seniors']], 0, 2, 15, 9],
         'circle-opacity': 0.55,
       } })
       map.addLayer({ id: 'segments', type: 'line', source: 'segments', layout: { 'line-cap': 'round', 'line-join': 'round' } })
       map.addLayer({ id: 'segments-hit', type: 'line', source: 'segments', paint: { 'line-width': 16, 'line-opacity': 0 } })
+      map.addLayer({ id: 'troutes', type: 'line', source: 'troutes', layout: { 'line-cap': 'round', 'line-join': 'round' } })
       map.addLayer({ id: 'routes', type: 'line', source: 'routes', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-width': 3, 'line-dasharray': [2, 1.5] } })
       map.addLayer({ id: 'dests', type: 'circle', source: 'dests', paint: { 'circle-radius': 5, 'circle-stroke-width': 2, 'circle-opacity': 0 } })
       map.addLayer({ id: 'gaps', type: 'circle', source: 'gaps', paint: {
@@ -160,6 +186,8 @@ export default function MapView(p: Props) {
       // The selection sits above every other layer.
       map.addLayer({ id: 'highlight-case', type: 'line', source: 'segments', filter: ['in', ['get', 'id'], ['literal', []]], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-width': HL_CASE } })
       map.addLayer({ id: 'highlight', type: 'line', source: 'segments', filter: ['in', ['get', 'id'], ['literal', []]], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-width': HL_WIDTH } })
+      map.addLayer({ id: 'route-hl-case', type: 'line', source: 'route-hl', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-width': HL_CASE } })
+      map.addLayer({ id: 'route-hl', type: 'line', source: 'route-hl', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-width': HL_WIDTH } })
       map.fitBounds(live.current.fly?.bbox ?? SG_BOUNDS, { padding: live.current.padding, duration: 0, maxZoom: 17.5 })
       map.setBearing(0); map.setPitch(0)
       setReady(true)
@@ -168,7 +196,7 @@ export default function MapView(p: Props) {
 
     const pick = (e: MapMouseEvent) => {
       const b: [[number, number], [number, number]] = [[e.point.x - 6, e.point.y - 6], [e.point.x + 6, e.point.y + 6]]
-      const layers = ['gaps', 'segments-hit', ...(live.current.town ? [] : ['subzones-fill'])].filter(l => map.getLayer(l) && map.getLayoutProperty(l, 'visibility') !== 'none')
+      const layers = (live.current.routesMode ? ['blocks', 'troutes'] : ['gaps', 'segments-hit', 'risk-fill', ...(live.current.town ? [] : ['subzones-fill'])]).filter(l => map.getLayer(l) && map.getLayoutProperty(l, 'visibility') !== 'none')
       return map.queryRenderedFeatures(b, { layers })[0]
     }
     map.on('click', e => {
@@ -177,6 +205,9 @@ export default function MapView(p: Props) {
       const f = pick(e)
       if (!f) return c.onEmpty()
       if (f.layer.id === 'gaps') c.onGap(String(f.properties.id))
+      else if (f.layer.id === 'troutes') c.onRoute(String(f.properties.id))
+      else if (f.layer.id === 'blocks') c.onBlock(`Blk ${f.properties.blk} ${f.properties.street}`)
+      else if (f.layer.id === 'risk-fill') c.onRisk(String(f.properties.id))
       else if (f.layer.id === 'segments-hit') c.onSegment(String(f.properties.id))
       else if (f.layer.id === 'subzones-fill' && f.properties.town) c.onTown(String(f.properties.town))
     })
@@ -187,6 +218,10 @@ export default function MapView(p: Props) {
     pinEl.className = 'pin'
     pinEl.setAttribute('role', 'img')
     pinMarker.current = new Marker({ element: pinEl })
+    const fromEl = document.createElement('div')
+    fromEl.className = 'pin pin-from'
+    fromEl.setAttribute('role', 'img')
+    fromMarker.current = new Marker({ element: fromEl })
     const tip = new Popup({ closeButton: false, closeOnClick: false, offset: 10 })
     map.on('mouseenter', 'dests', e => {
       const f = e.features?.[0]
@@ -204,7 +239,7 @@ export default function MapView(p: Props) {
   const map = ready ? mapRef.current : null
   const set = (id: string, data: FeatureCollection | null) => (map?.getSource(id) as GeoJSONSource | undefined)?.setData(data ?? EMPTY)
 
-  const focus = p.highlight.length > 0
+  const focus = p.highlight.length > 0 || !!p.routeHl
 
   // Colours follow the scheme; a selection greys out everything else.
   useEffect(() => {
@@ -229,9 +264,17 @@ export default function MapView(p: Props) {
     const hot = ['in', ['get', 'id'], ['literal', p.hotIds]]
     const w = (lo: number, mid: number, high: number, top: number) =>
       ['case', hot, top, ['<', ['get', 'foot'], p50], lo, ['<', ['get', 'foot'], p75], mid, high]
-    map.setPaintProperty('segments', 'line-color', focus ? c.muted : ['case', hot, c.ramp[4], step('foot', p.footBreaks, c.ramp)] as unknown as ExpressionSpecification)
-    map.setPaintProperty('segments', 'line-opacity', focus ? 0.25 : ['case', ['<', ['get', 'foot'], p50], 0.3, 1] as unknown as ExpressionSpecification)
-    map.setPaintProperty('segments', 'line-width', focus ? 1.25 : ['interpolate', ['linear'], ['zoom'], 13, w(0.5, 1.2, 2.5, 5), 17, w(1, 2.5, 5, 11)] as unknown as ExpressionSpecification)
+    map.setPaintProperty('risk-fill', 'fill-color', focus ? c.muted : c.risk)
+    map.setPaintProperty('risk-line', 'line-color', focus ? c.muted : c.risk)
+    map.setPaintProperty('troutes', 'line-color', focus ? c.muted : ['match', ['get', 'family'], ...Object.entries(c.family).flat(), c.muted] as unknown as ExpressionSpecification)
+    map.setPaintProperty('troutes', 'line-opacity', focus ? 0.25 : 0.8)
+    map.setPaintProperty('troutes', 'line-width', focus ? 1.25 : ['interpolate', ['linear'], ['get', 'trips'], 0, 1.5, 2000, 6] as unknown as ExpressionSpecification)
+    map.setPaintProperty('route-hl-case', 'line-color', c.ring)
+    map.setPaintProperty('route-hl', 'line-color', c.highlight)
+    // In Routes mode footfall steps back so the routes read.
+    map.setPaintProperty('segments', 'line-color', focus || p.routesMode ? c.muted : ['case', hot, c.ramp[4], step('foot', p.footBreaks, c.ramp)] as unknown as ExpressionSpecification)
+    map.setPaintProperty('segments', 'line-opacity', focus || p.routesMode ? 0.25 : ['case', ['<', ['get', 'foot'], p50], 0.3, 1] as unknown as ExpressionSpecification)
+    map.setPaintProperty('segments', 'line-width', focus || p.routesMode ? 1.25 : ['interpolate', ['linear'], ['zoom'], 13, w(0.5, 1.2, 2.5, 5), 17, w(1, 2.5, 5, 11)] as unknown as ExpressionSpecification)
     map.setPaintProperty('gaps', 'circle-opacity', focus ? 0.35 : 1)
     map.setPaintProperty('highlight-case', 'line-color', c.ring)
     map.setPaintProperty('highlight', 'line-color', c.highlight)
@@ -243,7 +286,36 @@ export default function MapView(p: Props) {
     map.setPaintProperty('draft-line', 'line-color', c.highlight)
     map.setPaintProperty('draft-pts', 'circle-color', c.highlight)
     map.setPaintProperty('draft-pts', 'circle-stroke-color', c.ring)
-  }, [map, p.scheme, p.footBreaks, p.subzoneBreaks, p.town, focus, p.footP, p.hotIds])
+  }, [map, p.scheme, p.footBreaks, p.subzoneBreaks, p.town, focus, p.footP, p.hotIds, p.routesMode])
+
+  useEffect(() => {
+    set('risk', { type: 'FeatureCollection', features: p.risk.map(r => ({ type: 'Feature', properties: { id: r.id }, geometry: { type: 'Polygon', coordinates: [circle(r.center, r.radiusM)] } })) })
+  }, [map, p.risk])
+  useEffect(() => {
+    set('troutes', { type: 'FeatureCollection', features: p.troutes.map(r => ({ type: 'Feature', properties: { id: r.id, family: r.family, trips: r.trips }, geometry: { type: 'LineString', coordinates: r.coords } })) })
+  }, [map, p.troutes])
+  useEffect(() => {
+    const h = p.routeHl
+    set('route-hl', h ? { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: h.coords } }] } : null)
+    const m = fromMarker.current
+    if (!map || !m) return
+    if (!h) { m.remove(); return }
+    m.getElement().setAttribute('aria-label', `Route starts at ${h.label}`)
+    m.setLngLat(h.from).addTo(map)
+  }, [map, p.routeHl])
+  // Labelled rings for the highest-risk areas.
+  useEffect(() => {
+    if (!map) return
+    const ms = p.risk.map((r, i) => {
+      const b = document.createElement('button')
+      b.type = 'button'
+      b.className = 'risk-label'
+      b.textContent = `High risk ${i + 1}`
+      b.addEventListener('click', e => { e.stopPropagation(); live.current.onRisk(r.id) })
+      return new Marker({ element: b, anchor: 'bottom' }).setLngLat([r.center[0], r.center[1] + r.radiusM / 110540]).addTo(map)
+    })
+    return () => ms.forEach(m => m.remove())
+  }, [map, p.risk])
 
   useEffect(() => { set('subzones', p.subzones) }, [map, p.subzones])
   useEffect(() => { set('segments', p.segments) }, [map, p.segments])
@@ -276,16 +348,22 @@ export default function MapView(p: Props) {
   // Numbered markers for the top fixes: real buttons, so they work from the keyboard too.
   useEffect(() => {
     if (!map) return
+    const roots: Root[] = []
     numMarkers.current = p.numbered.map((g, i) => {
       const b = document.createElement('button')
       b.type = 'button'
       b.className = 'gap-marker'
-      b.textContent = String(i + 1)
       b.setAttribute('aria-label', `Fix ${i + 1}: ${g.label}`)
+      const root = createRoot(b)
+      root.render(<BarrierBadge barrier={g.barrier} severity={g.severity} rank={i + 1} size={18} />)
+      roots.push(root)
       b.addEventListener('click', e => { e.stopPropagation(); live.current.onGap(g.id) })
       return new Marker({ element: b }).setLngLat(g.at).addTo(map)
     })
-    return () => { numMarkers.current.forEach(m => m.remove()); numMarkers.current = [] }
+    return () => {
+      numMarkers.current.forEach(m => m.remove()); numMarkers.current = []
+      setTimeout(() => roots.forEach(r => r.unmount())) // unmounting inside React's commit phase warns
+    }
   }, [map, p.numbered])
 
   useEffect(() => {
@@ -302,11 +380,12 @@ export default function MapView(p: Props) {
     vis('subzones-line', true)
     vis('segments', p.layers.footfall)
     vis('segments-hit', p.layers.footfall)
-    vis('gaps', p.layers.barriers)
-    vis('blocks', p.layers.blocks)
+    vis('gaps', p.layers.barriers && !p.routesMode)
+    vis('blocks', p.layers.blocks || p.routesMode)
+    vis('troutes', p.routesMode)
     vis('dests', p.layers.destinations)
     vis('routes', p.layers.routes)
-  }, [map, p.layers])
+  }, [map, p.layers, p.routesMode])
 
   useEffect(() => {
     if (!map || !p.fly) return

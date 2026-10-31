@@ -42,7 +42,9 @@ BENCH_GAP_M = 100    # no seat within 100 m of a segment midpoint = in a >200 m 
 # Trips per senior per week, by destination type. Assumptions, shown in the app.
 DEST_TYPES = {
     "hawker": ("Hawker centre or market", 5.0),
+    "kopitiam": ("Kopitiam or food court", 3.0),
     "bus": ("Bus stop", 4.0),
+    "fitness": ("Fitness corner", 1.0),
     "park": ("Park", 2.0),
     "supermarket": ("Supermarket", 2.0),
     "mrt": ("MRT station", 1.5),
@@ -71,10 +73,19 @@ BARRIERS = {
     "dark": ("Unlit at night", 1, "Path lighting", "medium"),
     "slope": ("Slope", 1, "Handrail or regrade", "medium"),
     "obstruction": ("Path partly blocked", 2, "Clear or move obstruction", "low"),
+    "no_tactile": ("Crossing without tactile paving", 2, "Tactile paving", "low"),
+    "silent_signal": ("Traffic light without audio signal", 2, "Audible crossing signal", "medium"),
 }
+# Who each barrier affects most: "mobility" (walking frame, wheelchair, frailty) and/or "sight" (low vision, blind).
+PROFILES = {"steps": ["mobility", "sight"], "crossing": ["mobility", "sight"], "kerb": ["mobility"],
+            "no_shelter": ["mobility"], "rest_gap": ["mobility"], "surface": ["mobility", "sight"],
+            "dark": ["sight"], "slope": ["mobility"], "obstruction": ["mobility", "sight"],
+            "no_tactile": ["sight"], "silent_signal": ["sight"]}
 VISION_MIN_CONF = 0.6  # street-image findings below this stay "needs a field check"
 # Attributes OSM usually does not record: shown as "needs field check", never as barriers.
-UNKNOWN = {"shelter": "Shelter not recorded", "lit": "Lighting not recorded"}
+UNKNOWN = {"shelter": "Shelter not recorded", "lit": "Lighting not recorded",
+           "tactile": "Tactile paving not recorded at this crossing",
+           "sound": "Audio signal not recorded at this traffic light"}
 
 S = requests.Session()
 S.headers["User-Agent"] = "SilverSteps hackathon (github.com/nyx-ulrix/SilverSteps)"
@@ -298,10 +309,10 @@ def build_town(town, nat):
     if not any(area.contains(Point(b["ll"])) for b in blocks):
         return None
 
-    ox.settings.useful_tags_way += ["covered", "footway", "crossing", "surface", "lit", "incline", "sidewalk", "tunnel"]
-    ox.settings.useful_tags_node += ["kerb", "crossing"]
+    ox.settings.useful_tags_way += OSM_TAGS_WAY
+    ox.settings.useful_tags_node += OSM_TAGS_NODE
     ox.settings.log_console = False
-    gml = CACHE / "towns" / f"{slug}.graphml"
+    gml = CACHE / "towns" / f"{slug}.g{GRAPH_VERSION}.graphml"
     if gml.exists():
         G = ox.load_graphml(gml)
     else:
@@ -312,13 +323,32 @@ def build_town(town, nat):
     for u, v, k, d in G.edges(keys=True, data=True):
         hw = first(d.get("highway"))
         covered = first(d.get("covered")) == "yes" or first(d.get("tunnel")) in ("yes", "building_passage")
-        crossing = first(d.get("crossing"))
+        ends = [G.nodes[n] for n in (u, v)]
+
+        def tag(k):  # way tag, else either end node's
+            return first(d.get(k)) or next((e.get(k) for e in ends if e.get(k)), None)
+        crossing = tag("crossing")
         is_crossing = first(d.get("footway")) == "crossing"
+        signals = crossing == "traffic_signals" or tag("crossing:signals") == "yes"
         barriers, unknown = [], []
         if hw == "steps":
             barriers.append("steps")
-        if is_crossing and crossing not in ("traffic_signals", "zebra", "marked"):
+        if is_crossing and not signals and crossing not in ("zebra", "marked"):
             barriers.append("crossing")
+        if is_crossing:  # checks for people with low vision or blindness
+            tactile = tag("tactile_paving")
+            if tactile == "no":
+                barriers.append("no_tactile")
+            elif tactile is None:
+                unknown.append("tactile")
+            if signals:
+                sound = tag("traffic_signals:sound")
+                if sound == "no" and tag("traffic_signals:vibration") != "yes":
+                    barriers.append("silent_signal")
+                elif sound is None:
+                    unknown.append("sound")
+        d["xing"] = ("signals" if signals else "zebra" if crossing in ("zebra", "marked") else "uncontrolled") \
+            if is_crossing else None
         if any(G.nodes[n].get("kerb") == "raised" for n in (u, v)):
             barriers.append("kerb")
         if first(d.get("surface")) in ("unpaved", "gravel", "dirt", "grass", "ground", "sand", "cobblestone", "sett"):
@@ -350,22 +380,20 @@ def build_town(town, nat):
 
     # Destinations: national lists + OpenStreetMap for the rest.
     dests = [dict(d) for d in nat["dests"] if route_buf.contains(Point(d["ll"]))]
-    fp = CACHE / "towns" / f"{slug}.features.geojson"
-    if fp.exists():
-        feats = gpd.read_file(fp)
-    else:
-        tags = {"highway": "bus_stop", "railway": "subway_entrance", "shop": "supermarket", "leisure": "park",
-                "amenity": ["community_centre", "clinic", "marketplace", "bench"]}
-        feats = ox.features_from_polygon(route_buf, tags).reset_index()
-        feats = feats[[c for c in ["name", "highway", "railway", "shop", "leisure", "amenity", "geometry"] if c in feats]]
-        feats.to_file(fp, driver="GeoJSON")
+    feats = gpd.read_file(CACHE / "towns" / f"{slug}.features2.geojson")  # cut by cache_from_extract
     benches = []
     for _, f in feats.iterrows():
         c = f.geometry if f.geometry.geom_type == "Point" else f.geometry.representative_point()
         name = f.get("name") if isinstance(f.get("name"), str) else None
         kind = None
+        food = " ".join(str(f.get(k) or "") for k in ("name", "cuisine")).lower()
         if f.get("amenity") == "bench":
             benches.append(c)
+        elif f.get("amenity") == "food_court" or (f.get("amenity") in ("cafe", "restaurant")
+                                                  and any(w in food for w in KOPITIAM_WORDS)):
+            kind, name = "kopitiam", name or "Kopitiam"
+        elif f.get("leisure") == "fitness_station":
+            kind, name = "fitness", name or "Fitness corner"
         elif f.get("highway") == "bus_stop":
             kind, name = "bus", name or "Bus stop"
         elif f.get("railway") == "subway_entrance":
@@ -393,6 +421,7 @@ def build_town(town, nat):
 
     # Gravity model: each senior picks one destination of each type, nearer ones more often.
     total_trips = 0.0
+    routes = []
     for b in blocks:
         if b["node"] not in R or not b["seniors"]:
             continue
@@ -400,17 +429,19 @@ def build_town(town, nat):
         by_type = defaultdict(list)
         for n, c in dist.items():
             for d in dest_by_node.get(n, []):
-                by_type[d["type"]].append((n, math.exp(-c / DECAY_M)))
+                by_type[d["type"]].append((n, math.exp(-c / DECAY_M), d))
+        inside = area.contains(Point(b["ll"]))
         for t, opts in by_type.items():
             trips = b["seniors"] * DEST_TYPES[t][1] * 2  # weekly, there and back
-            wsum = sum(w for _, w in opts)
-            for n, w in opts:
+            wsum = sum(w for _, w, _ in opts)
+            for n, w, d in opts:
                 share = trips * w / wsum
-                if area.contains(Point(b["ll"])):
-                    total_trips += share
                 p = paths[n]
                 for a, c in zip(p, p[1:]):
                     G.edges[R.edges[a, c]["ek"]]["foot"] += share
+                if inside:
+                    total_trips += share
+                    routes.append({"b": b, "t": t, "d": d, "p": p, "trips": share, "share": w / wsum})
 
     # Audit the segments inside the town.
     bench_m = gpd.GeoSeries(benches, crs=4326).to_crs(3414)
@@ -426,7 +457,7 @@ def build_town(town, nat):
             continue
         segs.append({"id": f"{u}-{v}-{k}", "u": u, "v": v, "way": str(first(d.get("osmid"))),
                      "name": first(d.get("name")) if isinstance(first(d.get("name")), str) else None,
-                     "hw": d["hw"], "len": round(d["length"]), "foot": round(d["foot"]),
+                     "hw": d["hw"], "xing": d["xing"], "len": round(d["length"]), "foot": round(d["foot"]),
                      "barriers": list(d["barriers"]), "unknown": d["unknown"], "covered": d["covered"],
                      "coords": [r6(c) for c in coords], "_mid": mid})
     if not segs:
@@ -450,8 +481,8 @@ def build_town(town, nat):
             continue
         c = v["checklist"]
 
-        def sure(k, val):
-            return c[k]["value"] == val and c[k]["confidence"] >= VISION_MIN_CONF
+        def sure(k, val):  # older cached checklists lack the sight-loss items
+            return k in c and c[k]["value"] == val and c[k]["confidence"] >= VISION_MIN_CONF
 
         def add(bt):
             if bt not in s["barriers"]:
@@ -472,6 +503,9 @@ def build_town(town, nat):
             add("surface")
         if sure("obstruction", "yes"):
             add("obstruction")
+        if s["xing"] and sure("tactile_paving", "no"):
+            s["unknown"] = [u for u in s["unknown"] if u != "tactile"]
+            add("no_tactile")
     feet = sorted(s["foot"] for s in segs)
     p50, p75 = feet[len(feet) // 2], feet[len(feet) * 3 // 4]
 
@@ -540,6 +574,38 @@ def build_town(town, nat):
                                "geometry": {"type": "LineString", "coordinates": s["coords"]}}
                               for i, s in enumerate(segs)]))
     dump("gaps.json", gap_list)
+    # Routes: each block's likeliest walk to each kind of place, most-used first.
+    def path_coords(p):
+        out = []
+        for a, c in zip(p, p[1:]):
+            d = G.edges[R.edges[a, c]["ek"]]
+            pts = list(d["geometry"].coords) if d.get("geometry") is not None else \
+                [(G.nodes[a]["x"], G.nodes[a]["y"]), (G.nodes[c]["x"], G.nodes[c]["y"])]
+            if math.dist(pts[0], (G.nodes[a]["x"], G.nodes[a]["y"])) > math.dist(pts[-1], (G.nodes[a]["x"], G.nodes[a]["y"])):
+                pts.reverse()
+            out += pts[1:] if out else pts
+        return [[round(x, 5), round(y, 5)] for x, y in out]
+
+    by_bt = defaultdict(list)
+    for r in routes:
+        by_bt[(id(r["b"]), r["t"])].append(r)
+    kept = []
+    for rs in by_bt.values():
+        rs.sort(key=lambda r: -r["share"])
+        kept += [r for i, r in enumerate(rs[:ROUTES_PER_TYPE]) if i == 0 or r["share"] >= ROUTE_MIN_SHARE]
+    kept.sort(key=lambda r: -r["trips"])
+    route_out = []
+    for i, r in enumerate(kept):
+        if len(r["p"]) < 2:
+            continue  # block and destination share a junction
+        eks = [R.edges[a, c]["ek"] for a, c in zip(r["p"], r["p"][1:])]
+        route_out.append({"id": i, "blk": f"Blk {r['b']['blk']} {r['b']['street']}", "type": r["t"],
+                          "dest": r["d"]["name"], "len": round(sum(G.edges[e]["length"] for e in eks)),
+                          "trips": round(r["trips"], 1), "share": round(r["share"], 2),
+                          "barriers": sorted({bt for e in eks for bt in G.edges[e]["barriers"]}),
+                          "coords": path_coords(r["p"])})
+    dump("routes.json", route_out)
+
     inside = [b for b in blocks if area.contains(Point(b["ll"]))]
     dump("blocks.json", fc([pt(b["ll"], {k: b[k] for k in ("blk", "street", "units", "year", "subzone", "seniors")})
                             for b in inside]))
@@ -557,9 +623,16 @@ def build_town(town, nat):
     return summary
 
 
-OSM_TAGS_WAY = ["covered", "footway", "crossing", "surface", "lit", "incline", "sidewalk", "tunnel", "foot", "access"]
-FEATURE_TAGS = {"highway": "bus_stop", "railway": "subway_entrance", "shop": "supermarket", "leisure": "park",
-                "amenity": ["community_centre", "clinic", "marketplace", "bench"]}
+OSM_TAGS_WAY = ["covered", "footway", "crossing", "surface", "lit", "incline", "sidewalk", "tunnel", "foot", "access",
+                "tactile_paving", "traffic_signals:sound", "traffic_signals:vibration", "crossing:signals"]
+OSM_TAGS_NODE = ["kerb", "crossing", "tactile_paving", "traffic_signals:sound", "traffic_signals:vibration"]
+GRAPH_VERSION = 2  # bump when the tags kept on graphs change, so cached town graphs get re-cut
+FEATURE_TAGS = {"highway": "bus_stop", "railway": "subway_entrance", "shop": "supermarket",
+                "leisure": ["park", "fitness_station"],
+                "amenity": ["community_centre", "clinic", "marketplace", "bench", "food_court", "cafe", "restaurant"]}
+KOPITIAM_WORDS = ("kopitiam", "coffee shop", "coffeeshop", "eating house", "food court", "foodcourt")
+ROUTES_PER_TYPE = 2      # per block, the likeliest destinations of each type that get a drawn route
+ROUTE_MIN_SHARE = 0.2    # skip destinations a block's seniors rarely pick
 NOT_WALKABLE = {"motorway", "motorway_link", "trunk", "trunk_link", "construction", "proposed", "raceway",
                 "bus_guideway", "busway", "abandoned", "platform"}
 
@@ -569,32 +642,39 @@ def cache_from_extract(nat, towns):
     Singapore OSM extract (download.bbbike.org/osm/bbbike/Singapore/Singapore.osm.gz)."""
     import gzip
     import shutil
-    need = [t for t in towns if not (CACHE / "towns" / f"{slugify(t)}.graphml").exists()
-            or not (CACHE / "towns" / f"{slugify(t)}.features.geojson").exists()]
-    if not need:
+    need_graph = [t for t in towns if not (CACHE / "towns" / f"{slugify(t)}.g{GRAPH_VERSION}.graphml").exists()]
+    need_feat = [t for t in towns if not (CACHE / "towns" / f"{slugify(t)}.features2.geojson").exists()]
+    if not need_graph and not need_feat:
         return
     xml = CACHE / "osm" / "Singapore.osm"
     if not xml.exists():
         with gzip.open(xml.with_suffix(".osm.gz"), "rb") as src, open(xml, "wb") as dst:
             shutil.copyfileobj(src, dst)
-    print(f"Cutting {len(need)} towns from the OSM extract")
+    print(f"Cutting {len(need_graph)} walk graphs and {len(need_feat)} feature sets from the OSM extract")
+    feats = ox.features_from_xml(xml, tags=FEATURE_TAGS).reset_index()
+    feats = feats[[c for c in ["name", "highway", "railway", "shop", "leisure", "amenity", "cuisine", "geometry"]
+                   if c in feats]]
+    for town in need_feat:
+        area = unary_union([s["geom"] for s in nat["subzones"] if s["town"] == town])
+        route_buf = to_ll(to_m(area).buffer(CUTOFF_M * 2))
+        feats[feats.intersects(route_buf)].to_file(CACHE / "towns" / f"{slugify(town)}.features2.geojson", driver="GeoJSON")
+    del feats
+    if not need_graph:
+        return
     ox.settings.useful_tags_way += OSM_TAGS_WAY
-    ox.settings.useful_tags_node += ["kerb", "crossing"]
+    ox.settings.useful_tags_node += OSM_TAGS_NODE
     G = ox.graph_from_xml(xml, bidirectional=True, simplify=False, retain_all=True)
     drop = [(u, v, k) for u, v, k, d in G.edges(keys=True, data=True)
             if first(d.get("highway")) in NOT_WALKABLE or first(d.get("foot")) == "no"
             or (first(d.get("access")) in ("private", "no") and first(d.get("foot")) not in ("yes", "designated"))]
     G.remove_edges_from(drop)
-    feats = ox.features_from_xml(xml, tags=FEATURE_TAGS).reset_index()
-    feats = feats[[c for c in ["name", "highway", "railway", "shop", "leisure", "amenity", "geometry"] if c in feats]]
-    for town in need:
+    for town in need_graph:
         slug = slugify(town)
         area = unary_union([s["geom"] for s in nat["subzones"] if s["town"] == town])
         route_buf = to_ll(to_m(area).buffer(CUTOFF_M * 2))
         sub = ox.truncate.truncate_graph_polygon(G, route_buf)
         sub = ox.truncate.largest_component(ox.simplify_graph(sub))
-        ox.save_graphml(sub, CACHE / "towns" / f"{slug}.graphml")
-        feats[feats.intersects(route_buf)].to_file(CACHE / "towns" / f"{slug}.features.geojson", driver="GeoJSON")
+        ox.save_graphml(sub, CACHE / "towns" / f"{slug}.g{GRAPH_VERSION}.graphml")
         print(f"  {town}: {len(sub)} nodes", flush=True)
 
 
@@ -631,7 +711,9 @@ def write_index(nat):
         "params": {"cutoffM": CUTOFF_M, "decayM": DECAY_M, "stepsFactor": STEPS_FACTOR, "shelterFactor": SHELTER_FACTOR,
                    "unsignalisedCrossingM": UNSIGNALISED_CROSSING_M, "benchGapM": BENCH_GAP_M * 2},
         "destTypes": {k: {"label": v[0], "perWeek": v[1]} for k, v in DEST_TYPES.items()},
-        "barriers": {k: {"label": v[0], "severity": v[1], "fix": v[2], "effort": v[3]} for k, v in BARRIERS.items()},
+        "barriers": {k: {"label": v[0], "severity": v[1], "fix": v[2], "effort": v[3], "profiles": PROFILES[k]}
+                     for k, v in BARRIERS.items()},
+        "profiles": {"mobility": "Walking frame or wheelchair", "sight": "Low vision or blind"},
         "unknown": UNKNOWN,
         "totals": {"seniors": int(sum(nat["seniors_sz"].values())),
                    "seniorsModelled": sum(t["seniorsModelled"] for t in towns),

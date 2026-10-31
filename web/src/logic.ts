@@ -2,7 +2,8 @@
 
 export type LngLat = [number, number]
 export type Effort = 'low' | 'medium' | 'high'
-export type BarrierDef = { label: string; severity: number; fix: string; effort: Effort }
+export type Profile = 'mobility' | 'sight'
+export type BarrierDef = { label: string; severity: number; fix: string; effort: Effort; profiles?: Profile[] }
 
 export type TownSummary = {
   slug: string; name: string; seniors: number; residents: number; blocks: number; weeklyTrips: number
@@ -18,13 +19,15 @@ export type IndexData = {
   destTypes: Record<string, { label: string; perWeek: number }>
   barriers: Record<string, BarrierDef>
   unknown: Record<string, string>
+  profiles?: Record<Profile, string>
   totals: { seniors: number; blocks: number; weeklyTrips: number; segments: number; gaps: number }
   towns: TownSummary[]
 }
 
 export type Seg = {
-  id: string; way: number; name: string | null; hw: string; len: number; foot: number
+  id: string; way: number | string; name: string | null; hw: string; len: number; foot: number
   barriers: string[]; unknown: string[]; covered: boolean; vision?: boolean
+  xing?: 'signals' | 'zebra' | 'uncontrolled' | null
 }
 
 export type Gap = {
@@ -37,7 +40,7 @@ export type Gap = {
 type Check = { value: 'yes' | 'no' | 'unknown'; confidence: number }
 export type VisionEntry = {
   status: 'ok' | 'no_imagery' | 'refused' | 'error'; pano?: string; date?: string; heading?: number; model?: string
-  checklist?: { shelter?: Check; bench?: Check; steps?: Check; ramp?: Check; surface_ok?: Check; obstruction?: Check; signage?: Check; notes?: string }
+  checklist?: { tactile_paving?: Check; ped_signal?: Check; shelter?: Check; bench?: Check; steps?: Check; ramp?: Check; surface_ok?: Check; obstruction?: Check; signage?: Check; notes?: string }
 }
 
 export type Verdict = 'correct' | 'wrong' | 'missed'
@@ -225,4 +228,69 @@ export function hotspots(segs: Iterable<SegInfo>, p75: number, n = 10): Hotspot[
     for (const s of list) if (s.foot > top.foot) top = s
     return { id: `hot:${top.id}`, segs: list.map(s => s.id), foot: top.foot, len: list.reduce((a, s) => a + s.len, 0), name: top.name, at: top.mid }
   }).sort((a, b) => b.foot - a.foot).slice(0, n)
+}
+
+// Until the pipeline tags every barrier with `profiles`, assume these.
+const SIGHT_ONLY = new Set(['no_tactile', 'silent_signal'])
+const BOTH = new Set(['crossing', 'obstruction', 'surface', 'dark'])
+export function affects(defs: Record<string, BarrierDef>, barrier: string, who: Profile | 'all'): boolean {
+  if (who === 'all') return true
+  const ps = defs[barrier]?.profiles ?? (SIGHT_ONLY.has(barrier) ? ['sight'] : BOTH.has(barrier) ? ['mobility', 'sight'] : ['mobility'])
+  return ps.includes(who)
+}
+
+/** Metres between two points, planar (fine at town scale). */
+export const metresBetween = (a: LngLat, b: LngLat) =>
+  Math.hypot((a[0] - b[0]) * 111320 * Math.cos(a[1] * Math.PI / 180), (a[1] - b[1]) * 110540)
+
+export type RiskArea = { id: string; gaps: Gap[]; score: number; center: LngLat; radiusM: number }
+
+/**
+ * Highest-risk areas: greedily, the worst remaining gap takes every gap within `linkM` of it. Scored by sum of foot x severity.
+ * ponytail: O(n^2) scan; fine for a few hundred gaps per town.
+ */
+export function riskAreas(gaps: Gap[], n = 5, linkM = 150): RiskArea[] {
+  const left = [...gaps].sort((a, b) => b.foot * b.severity - a.foot * a.severity)
+  const out: RiskArea[] = []
+  while (left.length) {
+    // Seeded on the worst remaining gap, so each area stays compact (no chaining across a town).
+    const members = [left.shift()!]
+    for (let i = left.length - 1; i >= 0; i--)
+      if (metresBetween(members[0].at, left[i].at) <= linkM) members.push(...left.splice(i, 1))
+    const center: LngLat = [members.reduce((a, g) => a + g.at[0], 0) / members.length, members.reduce((a, g) => a + g.at[1], 0) / members.length]
+    out.push({
+      id: `risk:${members[0].id}`, gaps: members, center,
+      score: members.reduce((a, g) => a + g.foot * g.severity, 0),
+      radiusM: Math.max(80, Math.max(...members.map(g => metresBetween(center, g.at))) + 40),
+    })
+  }
+  return out.sort((a, b) => b.score - a.score).slice(0, n)
+}
+
+/** A circle polygon for MapLibre, `steps` points around. */
+export function circle([lng, lat]: LngLat, radiusM: number, steps = 48): LngLat[] {
+  const kx = 111320 * Math.cos(lat * Math.PI / 180), ky = 110540
+  return Array.from({ length: steps + 1 }, (_, i) => {
+    const t = (i / steps) * 2 * Math.PI
+    return [lng + (radiusM * Math.cos(t)) / kx, lat + (radiusM * Math.sin(t)) / ky] as LngLat
+  })
+}
+
+export type BlockRoute = {
+  id: number | string; blk: string; type: string; dest: string; len: number; trips: number; share: number
+  barriers: string[]; coords: LngLat[]
+}
+
+/** Distance from a point to a polyline, metres. */
+export function distToLine(p: LngLat, line: LngLat[]): number {
+  const kx = 111320 * Math.cos(p[1] * Math.PI / 180), ky = 110540
+  let best = Infinity
+  for (let i = 1; i < line.length; i++) {
+    const ax = (line[i - 1][0] - p[0]) * kx, ay = (line[i - 1][1] - p[1]) * ky
+    const bx = (line[i][0] - p[0]) * kx, by = (line[i][1] - p[1]) * ky
+    const dx = bx - ax, dy = by - ay, L = dx * dx + dy * dy
+    const t = L ? Math.max(0, Math.min(1, -(ax * dx + ay * dy) / L)) : 0
+    best = Math.min(best, Math.hypot(ax + t * dx, ay + t * dy))
+  }
+  return best
 }

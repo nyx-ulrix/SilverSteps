@@ -1,11 +1,16 @@
 import { useState, type ReactNode } from 'react'
 import {
-  ArrowLeftIcon, CameraIcon, CheckIcon, FireIcon, XIcon, PlusIcon, ArrowCounterClockwiseIcon, TrashIcon, CrosshairIcon,
+  ArrowLeftIcon, CameraIcon, CheckIcon, FireIcon, TrafficSignalIcon, XIcon, PlusIcon, ArrowCounterClockwiseIcon, TrashIcon, CrosshairIcon,
   UsersThreeIcon, WarningIcon, ArrowClockwiseIcon,
 } from '@phosphor-icons/react'
+import { BarrierBadge } from './Badge.tsx'
+import { FAMILY_LABEL, FAMILY_OF, type Family } from './MapView.tsx'
+import { sortGaps, type BlockRoute, type RiskArea } from './logic.ts'
 import type { Gap, Hotspot, IndexData, SegInfo, SortMode, TownSummary, Verdict, Effort, VisionEntry } from './logic.ts'
 
 export const fmt = (n: number) => Math.round(n).toLocaleString('en-SG')
+/** 23565 -> 23.6k */
+export const short = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 100000 ? 0 : 1).replace(/\.0$/, '')}k` : fmt(n))
 export const metres = (m: number) => (m >= 1000 ? `${(m / 1000).toFixed(1)} km` : `${fmt(m)} m`)
 const EFFORT: Record<Effort, string> = { low: 'Low effort', medium: 'Medium effort', high: 'High effort' }
 const HW: Record<string, string> = {
@@ -98,14 +103,19 @@ export function GapList({ gaps, townNames, onPick }: { gaps: Gap[]; townNames?: 
       <ol className="list gaps" aria-label="Priority fixes">
         {gaps.slice(0, limit).map((g, i) => (
           <li key={g.id}>
-            <button type="button" className="row gap-row" onClick={() => onPick(g)}>
-              <span className="rank">{i + 1}</span>
+            <button type="button" className="row gap-row" onClick={() => onPick(g)} aria-label={`${i + 1}. ${g.label}. ${gapPlace(g)}. Fix: ${g.fix}. About ${fmt(g.foot)} senior trips a week.`}>
+              <BarrierBadge barrier={g.barrier} severity={g.severity} rank={i + 1} />
               <span className="gap-body">
-                <span className="row-title">
-                  {gapPlace(g)}{townNames ? `, ${townNames[g.town] ?? g.town}` : ''}
+                <span className="issue">
+                  {g.label}
                   {g.corrected && <UsersThreeIcon className="mark-icon" size={18} aria-label="Corrected by residents" />}
                 </span>
-                <span className="row-meta">{g.label}, {fmt(g.foot)} senior trips a week</span>
+                <span className="row-meta">{gapPlace(g)}{townNames ? `, ${townNames[g.town] ?? g.town}` : ''}</span>
+                <span className="chips">
+                  <span className="chip">Fix: {g.fix}</span>
+                  <span className="chip">~{short(g.foot)} trips/wk</span>
+                  <span className="chip chip-quiet">{EFFORT[g.effort]}</span>
+                </span>
               </span>
             </button>
           </li>
@@ -235,6 +245,7 @@ function Unknowns({ keys, index }: { keys: string[]; index: IndexData }) {
 }
 
 const CHECKS: [keyof NonNullable<VisionEntry['checklist']>, string][] = [
+  ['tactile_paving', 'Tactile paving'], ['ped_signal', 'Pedestrian signal'],
   ['shelter', 'Shelter'], ['bench', 'Bench'], ['steps', 'Steps'], ['ramp', 'Ramp'],
   ['surface_ok', 'Surface in good condition'], ['obstruction', 'Path partly blocked'], ['signage', 'Signage'],
 ]
@@ -267,6 +278,27 @@ function PhotoCheck({ entry, minConf }: { entry: VisionEntry | null | undefined;
   )
 }
 
+const XING = { signals: 'Signalised crossing', zebra: 'Zebra crossing', uncontrolled: 'Crossing without signals' }
+
+/** Crossing type plus what matters for people with low vision: tactile paving and an audio signal. */
+function CrossingInfo({ seg, barriers }: { seg: SegInfo; barriers: string[] }) {
+  if (!seg.xing) return null
+  const status = (missing: string, unknown: string) =>
+    barriers.includes(missing) ? 'none' : seg.unknown.includes(unknown) ? 'not recorded' : 'recorded'
+  return (
+    <div className="crossing">
+      <TrafficSignalIcon aria-hidden size={22} />
+      <div>
+        <p className="row-title">{XING[seg.xing]}</p>
+        <p className="row-meta">
+          Tactile paving: {status('no_tactile', 'tactile')}
+          {seg.xing === 'signals' && <>. Audio signal: {status('silent_signal', 'sound')}</>}
+        </p>
+      </div>
+    </div>
+  )
+}
+
 /* ---------- Gap detail ---------- */
 
 export function GapDetail({ gap, onHotspot, removed, rank, total, sortLabel, verdict, segs, index, onVerdict, onMissed, onSegment, saveState, saveError }: {
@@ -277,13 +309,19 @@ export function GapDetail({ gap, onHotspot, removed, rank, total, sortLabel, ver
   const unknown = [...new Set(segs.flatMap(s => s.unknown))]
   return (
     <div className="stack">
+      <div className="issue-head">
+        <BarrierBadge barrier={gap.barrier} severity={gap.severity} size={26} />
+        <div>
+          <h2>{gap.label}</h2>
+          <p className="sub">{gapPlace(gap)}</p>
+        </div>
+      </div>
       <div>
-        <h2>{gap.label}</h2>
-        <p className="sub">{gapPlace(gap)}</p>
         {onHotspot && <span className="tag"><FireIcon aria-hidden size={16} />On a hotspot</span>}
       </div>
       {removed && <Notice>Residents marked this barrier as wrong, so it is no longer in the priority list.</Notice>}
       <Trips n={gap.foot} />
+      {segs[0] && <CrossingInfo seg={segs[0]} barriers={segs[0].barriers} />}
       <p className="fixline"><strong>Fix:</strong> {fixText(gap)}</p>
       {gap.sv ? (
         <p className="sv">
@@ -348,6 +386,7 @@ export function SegmentDetail({ seg, barriers, verdictFor, index, photo, saveSta
         <p className="sub">{hwLabel(seg.hw)}</p>
       </div>
       <Trips n={seg.foot} />
+      <CrossingInfo seg={seg} barriers={barriers} />
       <SaveNotice state={saveState} />
       {shown.length === 0 && <p className="empty">No barriers recorded here in OpenStreetMap.</p>}
       <ul className="findings">
@@ -509,6 +548,137 @@ export function RetryError({ children, onRetry }: { children: ReactNode; onRetry
     <div className="stack-sm">
       <Notice tone="error">{children}</Notice>
       <button type="button" className="btn btn-secondary" onClick={onRetry}><ArrowClockwiseIcon aria-hidden size={20} />Try again</button>
+    </div>
+  )
+}
+
+/* ---------- Risk areas ---------- */
+
+export function RiskDetail({ rank, area, onPick }: { rank: number; area: RiskArea; onPick: (g: Gap) => void }) {
+  return (
+    <div className="stack">
+      <div>
+        <h2>High risk area {rank}</h2>
+        <p className="sub">{area.gaps.length} {area.gaps.length === 1 ? 'barrier' : 'barriers'} close together on busy paths</p>
+      </div>
+      <p className="muted">Ranked by estimated senior trips times barrier severity, added up across the area (modelled).</p>
+      <GapList gaps={sortGaps(area.gaps, 'impact')} onPick={onPick} />
+    </div>
+  )
+}
+
+/* ---------- Block routes ---------- */
+
+export type Likelihood = 'High' | 'Medium' | 'Low'
+const blkShort = (blk: string) => blk.split(' ').slice(0, 2).join(' ')
+export const destShort = (d: string) => d.match(/\(([^)]+)\)\s*$/)?.[1] ?? d
+export const routeTitle = (r: BlockRoute) => `${blkShort(r.blk)} → ${destShort(r.dest)}`
+
+function Pill({ l }: { l: Likelihood }) {
+  return <span className={`pill pill-${l.toLowerCase()}`}>{l} likelihood</span>
+}
+
+export type RouteSort = 'likely' | 'unlikely' | 'short'
+
+export function RouteList({ routes, total, families, onFamily, colors, sort, onSort, blk, blocks, onBlk, likelihood, typeLabel, onPick, loading, error }: {
+  routes: BlockRoute[]; total: number; families: Set<Family>; onFamily: (f: Family) => void; colors: Record<Family, string>
+  sort: RouteSort; onSort: (s: RouteSort) => void; blk: string; blocks: string[]; onBlk: (b: string) => void
+  likelihood: (r: BlockRoute) => Likelihood; typeLabel: (t: string) => string; onPick: (r: BlockRoute) => void
+  loading: boolean; error: boolean
+}) {
+  const [limit, setLimit] = useState(8)
+  return (
+    <section className="stack-sm" aria-labelledby="routes-h">
+      <div className="list-head">
+        <h2 id="routes-h">Walks from home</h2>
+        <label className="inline-select">
+          <span>Sort by</span>
+          <select value={sort} onChange={e => onSort(e.target.value as RouteSort)}>
+            <option value="likely">Most likely first</option>
+            <option value="unlikely">Least likely first</option>
+            <option value="short">Shortest</option>
+          </select>
+        </label>
+      </div>
+      <div className="fam-chips" role="group" aria-label="Show routes to">
+        {(Object.keys(FAMILY_LABEL) as Family[]).map(f => (
+          <button key={f} type="button" className="fam-chip" aria-pressed={families.has(f)} onClick={() => onFamily(f)}>
+            <span className="fam-dot" style={{ background: colors[f] }} aria-hidden />{FAMILY_LABEL[f]}
+          </button>
+        ))}
+      </div>
+      <div className="field">
+        <label htmlFor="blk">HDB block (optional)</label>
+        <input id="blk" type="search" list="blk-list" value={blk} onChange={e => onBlk(e.target.value)} autoComplete="off" aria-describedby="blk-help" />
+        <datalist id="blk-list">{blocks.map(b => <option key={b} value={b} />)}</datalist>
+        <span id="blk-help" className="help">Or click a block on the map.</span>
+      </div>
+      {loading ? <Skeleton rows={4} /> : error ? <Notice tone="error">Routes for this town aren't ready yet.</Notice> : !routes.length ? (
+        <p className="empty">No routes match. Try another block or turn on more place types.</p>
+      ) : (
+        <>
+          <p className="muted">{fmt(total)} routes. The map shows the first 150.</p>
+          <ol className="list gaps" aria-label="Routes">
+            {routes.slice(0, limit).map(r => (
+              <li key={r.id}>
+                <button type="button" className="row route-row" onClick={() => onPick(r)}>
+                  <span className="fam-bar" style={{ background: colors[FAMILY_OF[r.type] ?? 'shops'] }} aria-hidden />
+                  <span className="gap-body">
+                    <span className="issue">{routeTitle(r)}</span>
+                    <span className="row-meta">{typeLabel(r.type)}, {metres(r.len)}, ~{short(r.trips)} trips a week</span>
+                    <span className="chips"><Pill l={likelihood(r)} /></span>
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ol>
+          {routes.length > limit && (
+            <button type="button" className="btn btn-secondary wide" onClick={() => setLimit(l => l + 10)}>Show more ({fmt(routes.length - limit)} left)</button>
+          )}
+        </>
+      )}
+    </section>
+  )
+}
+
+export function RouteDetail({ route, likelihood, typeLabel, barriers, onGap }: {
+  route: BlockRoute; likelihood: Likelihood; typeLabel: string
+  barriers: { key: string; label: string; severity: number; gap: Gap | null }[]; onGap: (g: Gap) => void
+}) {
+  return (
+    <div className="stack">
+      <div>
+        <h2>{routeTitle(route)}</h2>
+        <p className="sub">From {route.blk} to {destShort(route.dest)}, {typeLabel.toLowerCase()}</p>
+        <span className="chips"><Pill l={likelihood} /></span>
+      </div>
+      <Trips n={route.trips} />
+      <p className="muted">
+        {metres(route.len)} on the shortest walking route. Seniors in this block are estimated to make about {Math.round(route.share * 100)}% of
+        their {typeLabel.toLowerCase()} trips to this place.
+      </p>
+      <section className="stack-sm" aria-labelledby="rb-h">
+        <h3 id="rb-h">Barriers on the way</h3>
+        {barriers.length ? (
+          <ul className="list">
+            {barriers.map(b => (
+              <li key={b.key}>
+                {b.gap ? (
+                  <button type="button" className="row gap-row" onClick={() => onGap(b.gap!)}>
+                    <BarrierBadge barrier={b.key} severity={b.severity} />
+                    <span className="gap-body"><span className="issue">{b.label}</span><span className="row-meta">Open this fix</span></span>
+                  </button>
+                ) : (
+                  <span className="row gap-row static">
+                    <BarrierBadge barrier={b.key} severity={b.severity} />
+                    <span className="gap-body"><span className="issue">{b.label}</span><span className="row-meta">On a quieter part of the route</span></span>
+                  </span>
+                )}
+              </li>
+            ))}
+          </ul>
+        ) : <p className="muted">None recorded in the map data.</p>}
+      </section>
     </div>
   )
 }

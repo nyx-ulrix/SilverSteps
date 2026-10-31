@@ -1,6 +1,10 @@
 /* Tokens: zinc neutrals, one teal accent. The footfall ramp (blue) is data and lives in MapView. */
 :root {
   color-scheme: light;
+  /* Severity: one warm scale, kept apart from the teal accent. Icon on tint >= 4.5:1. */
+  --sev3-bg: #fde4d8; --sev3-fg: #a8330c;
+  --sev2-bg: #fbefcf; --sev2-fg: #7d4f00;
+  --sev1-bg: #e9e9ec; --sev1-fg: #4b4b53;
   --bg: #f4f4f5;
   --surface: #fcfcfc;
   --surface-2: #f4f4f5;
@@ -22,6 +26,9 @@
 @media (prefers-color-scheme: dark) {
   :root {
     color-scheme: dark;
+    --sev3-bg: #4a2418; --sev3-fg: #ffab8a;
+    --sev2-bg: #43340f; --sev2-fg: #f7c968;
+    --sev1-bg: #33333a; --sev1-fg: #d0d0d6;
     --bg: #18181b;
     --surface: #1f1f23;
     --surface-2: #27272a;
@@ -196,6 +203,34 @@ textarea { resize: vertical; }
 .disclosure[open] summary { margin-bottom: 4px; }
 .mini-h { font-size: 0.95rem; margin: 12px 0 6px; }
 
+/* ---------- who for / crossing ---------- */
+.who { display: grid; gap: 6px; }
+.who > span { font-weight: 600; }
+.switch-3 { grid-template-columns: repeat(3, 1fr); }
+.switch-3 button { font-size: 0.85rem; line-height: 1.2; padding: 4px; }
+.crossing { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: var(--radius); background: var(--surface-2); }
+.crossing svg { flex: none; margin-top: 2px; color: var(--text-2); }
+
+/* ---------- barrier badges ---------- */
+.badge {
+  position: relative; flex: none; display: inline-grid; place-items: center;
+  width: 36px; height: 36px; border-radius: var(--radius);
+}
+.sev-3 { background: var(--sev3-bg); color: var(--sev3-fg); }
+.sev-2 { background: var(--sev2-bg); color: var(--sev2-fg); }
+.sev-1 { background: var(--sev1-bg); color: var(--sev1-fg); }
+.badge-rank {
+  position: absolute; top: -6px; left: -6px; min-width: 18px; height: 18px; padding: 0 4px;
+  display: grid; place-items: center; border-radius: 9px;
+  background: var(--text); color: var(--surface); font-size: 0.7rem; font-weight: 700; line-height: 1;
+}
+.issue { font-weight: 700; line-height: 1.3; }
+.issue-head { display: flex; gap: 12px; align-items: flex-start; }
+.issue-head .badge { width: 44px; height: 44px; }
+.chips { display: flex; flex-wrap: wrap; gap: 4px 6px; margin-top: 2px; }
+.chip { font-size: 0.8rem; padding: 1px 8px; border-radius: 999px; background: var(--surface-2); color: var(--text); border: 1px solid var(--border); }
+.chip-quiet { color: var(--text-2); }
+
 /* ---------- lists ---------- */
 .list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
 .row {
@@ -207,7 +242,7 @@ textarea { resize: vertical; }
 .row.selected { background: var(--accent-soft); }
 .row-title { font-weight: 600; }
 .row-meta { color: var(--text-2); font-size: 0.9rem; }
-.gap-row { grid-template-columns: 2rem 1fr; gap: 10px; align-items: start; }
+.gap-row { grid-template-columns: 36px 1fr; gap: 12px; align-items: start; padding-top: 12px; }
 .gaps > li + li .gap-row { border-top: 1px solid var(--surface-3); border-radius: 0; }
 .gaps > li + li .gap-row:hover { border-radius: 0; }
 .rank { font-weight: 700; font-variant-numeric: tabular-nums; color: var(--text-2); padding-top: 1px; }
@@ -278,7 +313,7 @@ textarea { resize: vertical; }
   position: absolute; z-index: 1; top: var(--gutter); right: var(--gutter);
   width: 260px; display: grid; gap: 8px; justify-items: end; font-size: 0.9rem;
 }
-.mapkey details, .legend-mini {
+.mapkey details {
   width: 100%; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow);
 }
 .mapkey details:not([open]) { width: auto; }
@@ -298,13 +333,8 @@ textarea { resize: vertical; }
 .ramp ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
 .ramp li { display: flex; align-items: center; gap: 8px; font-variant-numeric: tabular-nums; font-size: 0.85rem; }
 .ramp .swatch { height: 10px; width: 22px; border-radius: 2px; }
-.legend-mini { display: grid; gap: 4px; padding: 8px 12px; font-size: 0.8rem; color: var(--text-2); }
-.legend-bar { height: 8px; border-radius: 4px; }
-.legend-ends { display: flex; justify-content: space-between; }
-.has-sel .legend-mini { display: none; }
 @media (max-width: 767px) {
   .mapkey { top: 12px; right: 12px; width: min(260px, calc(100vw - 24px)); }
-  .legend-mini { display: none; }
 }
 
 /* ---------- right-drag pan ---------- */
@@ -320,13 +350,12 @@ textarea { resize: vertical; }
 
 /* ---------- numbered fix markers ---------- */
 .gap-marker {
-  width: 28px; height: 28px; border-radius: 50%; padding: 0; cursor: pointer;
-  display: grid; place-items: center; font: 700 0.8rem/1 'Public Sans Variable', system-ui, sans-serif;
-  background: var(--surface); color: var(--accent); border: 2.5px solid var(--accent);
-  box-shadow: 0 1px 4px rgb(0 0 0 / 0.3);
+  padding: 0; border: 2px solid var(--surface); border-radius: var(--radius); background: none; cursor: pointer;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 0.35); line-height: 0;
 }
-.gap-marker:hover { background: var(--accent-soft); }
-.has-sel .gap-marker { color: var(--text-2); border-color: var(--text-2); opacity: 0.6; box-shadow: none; }
+.gap-marker .badge { width: 32px; height: 32px; }
+.gap-marker:hover .badge { filter: brightness(0.95); }
+.has-sel .gap-marker { filter: grayscale(1); opacity: 0.5; box-shadow: none; }
 
 /* ---------- selection pin ---------- */
 .pin {
@@ -364,3 +393,33 @@ textarea { resize: vertical; }
 .maplibregl-popup-content { background: var(--surface); color: var(--text); font: inherit; font-size: 0.9rem; padding: 6px 10px; border-radius: 6px; box-shadow: var(--shadow); }
 .maplibregl-popup-tip { display: none; }
 .list-title { font-size: 1.1rem; }
+
+/* ---------- risk areas ---------- */
+.risk-label {
+  padding: 2px 8px; border-radius: 999px; cursor: pointer; white-space: nowrap;
+  font: 700 0.75rem/1.4 'Public Sans Variable', system-ui, sans-serif;
+  background: var(--surface); color: var(--sev3-fg); border: 2px solid currentColor;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.25);
+}
+.has-sel .risk-label { color: var(--text-2); opacity: 0.6; box-shadow: none; }
+
+/* ---------- block routes ---------- */
+.fam-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.fam-chip {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 36px; padding: 0 10px;
+  border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--text-2);
+  font-size: 0.82rem; font-weight: 600; cursor: pointer;
+}
+.fam-chip[aria-pressed='true'] { color: var(--text); border-color: var(--text-2); }
+.fam-chip[aria-pressed='false'] .fam-dot { background: transparent !important; border: 2px solid var(--border); }
+.fam-dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.route-row { grid-template-columns: 6px 1fr; gap: 12px; align-items: stretch; }
+.fam-bar { border-radius: 3px; }
+.pill { font-size: 0.75rem; font-weight: 700; padding: 1px 8px; border-radius: 999px; }
+.pill-high { background: var(--text); color: var(--surface); }
+.pill-medium { border: 1px solid var(--text-2); color: var(--text); }
+.pill-low { border: 1px dashed var(--border); color: var(--text-2); }
+.row.static { cursor: default; }
+.row.static:hover { background: none; }
+.pin-from { background: var(--surface); box-shadow: 0 0 0 2px var(--accent), 0 2px 8px rgb(0 0 0 / 0.35); border-color: var(--accent); }
+@media (pointer: coarse) { .fam-chip { min-height: 44px; } }
