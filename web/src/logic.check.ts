@@ -1,0 +1,34 @@
+// Run: node src/logic.check.ts  (Node 22.18+ strips types natively)
+import { applyCorrections, sortGaps, routeAccuracy, type SegInfo, type Gap, type Feedback } from './logic.ts'
+import assert from 'node:assert/strict'
+
+const defs = {
+  steps: { label: 'Steps', severity: 3, fix: 'Ramp', effort: 'high' as const },
+  kerb: { label: 'Kerb', severity: 2, fix: 'Kerb ramp', effort: 'low' as const },
+}
+const seg = (id: string, way: number, foot: number, barriers: string[], x: number): SegInfo => ({
+  id, way, name: null, hw: 'footway', len: 100, foot, barriers, unknown: [], covered: false,
+  coords: [[103.8 + x, 1.37], [103.801 + x, 1.37]], mid: [103.8005 + x, 1.37],
+})
+const segs = new Map([seg('a', 1, 500, ['steps'], 0), seg('b', 1, 300, ['steps'], 0.001), seg('c', 2, 1000, [], 0.002)].map(s => [s.id, s]))
+const gaps: Gap[] = [{ id: '1:steps', barrier: 'steps', label: 'Steps', severity: 3, fix: 'Ramp', effort: 'high', foot: 500, len: 200, name: null, segs: ['a', 'b'], at: [0, 0], source: 'OSM', town: 't' }]
+const fb = (segment: string, barrier: string | null, verdict: Feedback['verdict'], created: string, gap: string | null = null): Feedback =>
+  ({ town: 't', segment, gap, barrier, verdict, note: null, created })
+
+// untouched
+assert.equal(applyCorrections(segs, gaps, [], defs).gaps[0], gaps[0])
+// wrong on the busiest seg: gap shrinks to b, foot drops to 300
+let r = applyCorrections(segs, gaps, [fb('a', 'steps', 'wrong', '1')], defs)
+assert.deepEqual([r.gaps[0].segs, r.gaps[0].foot, r.gaps[0].len, r.gaps[0].corrected], [['b'], 300, 100, true])
+// wrong on whole gap removes it; later correct restores it (latest wins)
+assert.equal(applyCorrections(segs, gaps, [fb('a', null, 'wrong', '1', '1:steps')], defs).gaps.length, 0)
+assert.equal(applyCorrections(segs, gaps, [fb('a', null, 'wrong', '1', '1:steps'), fb('a', null, 'correct', '2', '1:steps')], defs).gaps[0].foot, 500)
+// missed kerb on c creates gap 2:kerb that outranks steps (1000*2 > 500*3)
+r = applyCorrections(segs, gaps, [fb('c', 'kerb', 'missed', '1')], defs)
+assert.deepEqual(sortGaps(r.gaps, 'impact').map(g => g.id), ['2:kerb', '1:steps'])
+assert.deepEqual(sortGaps(r.gaps, 'quick').map(g => g.id), ['2:kerb', '1:steps'])
+assert.deepEqual(r.barriers.get('c'), ['kerb'])
+// route along seg c (foot 1000 >= p50 500) is 100% on busy paths; far away route is 0%
+assert.equal(routeAccuracy([{ town: 't', destination_type: null, coords: [[103.8021, 1.3701], [103.8029, 1.3701]], created: '' }], segs.values(), 500)!.share, 1)
+assert.equal(routeAccuracy([{ town: 't', destination_type: null, coords: [[103.9, 1.4], [103.901, 1.4]], created: '' }], segs.values(), 500)!.share, 0)
+console.log('logic ok')

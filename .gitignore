@@ -1,0 +1,13 @@
+.venv/
+pipeline/cache/
+node_modules/
+web/dist/
+__pycache__/
+*.db
+.env
+graphify-out/
+server/.venv/
+/cache/
+firebase-debug.log
+.firebase/
+web/tsconfig.tsbuildinfo
