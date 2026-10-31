@@ -166,7 +166,7 @@ app.add_middleware(GZipMiddleware, minimum_size=1000)  # town segment files are 
 
 @app.get("/api/health")
 def health():
-    return {"ok": True, "db": "sqlite" if IS_SQLITE else "mariadb"}
+    return {"ok": True, "db": "sqlite" if IS_SQLITE else "mariadb", "ai": bool(os.environ.get("ANTHROPIC_API_KEY"))}
 
 
 @app.get("/api/feedback")

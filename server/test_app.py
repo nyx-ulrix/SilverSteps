@@ -10,7 +10,7 @@ RT = {"town": "bedok", "destination_type": "park", "coords": [[103.9, 1.3], [103
 
 
 def test_flow():
-    assert c.get("/api/health").json() == {"ok": True, "db": "sqlite"}
+    assert c.get("/api/health").json()["db"] == "sqlite"
     r = c.post("/api/feedback", json=FB)
     assert r.status_code == 201 and r.json()["note"] == "ok"
     assert len(c.get("/api/feedback", params={"town": "bedok"}).json()) == 1
