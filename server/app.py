@@ -296,6 +296,25 @@ def report_out(r: Report):
             "created": iso(r.created)}
 
 
+@app.get("/api/geocode")
+def geocode(request: Request, postal: str = Query(pattern=r"^\d{6}$")):
+    """Postal code -> coordinates via OneMap's public search, for residents who'd rather type than share GPS."""
+    rate_limit(request)
+    import urllib.parse, urllib.request
+    url = "https://www.onemap.gov.sg/api/common/elastic/search?" + urllib.parse.urlencode(
+        {"searchVal": postal, "returnGeom": "Y", "getAddrDetails": "Y", "pageNum": 1})
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "SilverSteps"}), timeout=8) as r:
+            hits = json.loads(r.read()).get("results", [])
+    except (OSError, ValueError):
+        raise HTTPException(503, "Postal code lookup is unavailable right now")
+    hit = next((h for h in hits if h.get("POSTAL") == postal), None)
+    if not hit:
+        raise HTTPException(404, "We couldn't find that postal code")
+    lat, lng = float(hit["LATITUDE"]), float(hit["LONGITUDE"])
+    return {"lat": round(lat, 6), "lng": round(lng, 6), "address": hit.get("ADDRESS"), "town": locate(lng, lat)[0]}
+
+
 @app.get("/api/regions/locate")
 def region_locate(lat: float = Query(ge=1.15, le=1.50), lng: float = Query(ge=103.55, le=104.15)):
     slug, name = locate(lng, lat)

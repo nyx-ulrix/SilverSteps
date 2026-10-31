@@ -86,7 +86,11 @@ def street_view(seg, key):
                 "size": "640x480", "pano": meta["pano_id"], "heading": h, "pitch": -10, "fov": 90, "key": key})
             r.raise_for_status()
             f.write_bytes(r.content)
-        imgs.append(base64.standard_b64encode(f.read_bytes()).decode())
+        data = f.read_bytes()
+        if len(data) > 1000 and data.startswith(b"\xff\xd8"):  # Street View sometimes returns an empty body
+            imgs.append(base64.standard_b64encode(data).decode())
+    if not imgs:
+        return None, {"status": "no_imagery"}
     return imgs, {"pano": meta["pano_id"], "date": meta.get("date"), "heading": round(head),
                   "lat": meta["location"]["lat"], "lng": meta["location"]["lng"]}
 
@@ -136,6 +140,8 @@ def main():
                     return seg["properties"]["id"], {**meta, **res}, usage
                 except (anthropic.RateLimitError, anthropic.APIConnectionError, anthropic.InternalServerError):
                     time.sleep(10 * (attempt + 1))
+                except anthropic.BadRequestError:
+                    break  # this image can't be checked; record it and move on
             return seg["properties"]["id"], {**meta, "status": "error"}, None
 
         with ThreadPoolExecutor(6) as ex:
